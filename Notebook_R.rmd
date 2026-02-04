@@ -66,6 +66,20 @@ vars_num <- names(data)[sapply(data, is.numeric)]
 ggpairs(data[, vars_num])  
 ```
 
-4\. Réalisez une analyse en composantes principales des variables explicatives quantitatives et interprétez les
+```{r}
+
+vars_num <- names(data)[sapply(data, is.numeric)]
+
+ggpairs(
+  data,
+  columns = vars_num,
+  aes(alpha = 0.6)
+) 
+
+library(corrplot)
+corrplot(cor(data[, vars_num]),method="ellipse")
+```
+
+**4. Réalisez une analyse en composantes principales des variables explicatives quantitatives et interprétez les**
 
 résultats. Visualisez les dépendances éventuelles entre les variables à prédire et les variables explicatives.
