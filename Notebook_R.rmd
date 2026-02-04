@@ -1,30 +1,70 @@
 ```{r}
-library(ggplot2)
+library(readr)
+library(GGally)
 ```
 
 # Importation des données
 
 ```{r}
-
+path = "https://raw.githubusercontent.com/Jeanne-mrq/projet-MLBBL/refs/heads/main/healthcare_synthetic_data.csv"
+data <- read.csv(path)
 ```
 
 # Analyse Exploratoire
 
-## 
-
-
-
-
-
-
-
-
-
 **1. Commencez par vérifier la nature des différentes variables et leur encodage. N’oubliez pas de convertir toutes les variables qualitatives.**
 
-**2. Commencez l’exploration par une analyse descriptive unidimensionnelle des données. Des transformationsdes variables quantitatives vous semblent-t-elles pertinentes ?**
+```{r}
+print(str(data))
+
+#Mise en forme quanti/quali          
+data$Gender <- as.factor(data$Gender)
+data$Smoking_Status <- as.factor(data$Smoking_Status)
+data$Family_History <- as.factor(data$Family_History)
+data$Physical_Activity_Level <- as.factor(data$Physical_Activity_Level)
+data$Alcohol_Consumption <- as.factor(data$Alcohol_Consumption)
+data$Heart_Disease_Risk <- as.factor(data$Heart_Disease_Risk)
+data$Sleep_Hours <- as.factor(data$Sleep_Hours)
+data$Stress_Level <- as.factor(data$Stress_Level)
+
+
+```
+
+**2. Commencez l’exploration par une analyse descriptive unidimensionnelle des données. Des transformations des variables quantitatives vous semblent-t-elles pertinentes ?**
+
+```{r}
+
+library(ggplot2)
+library(gridExtra)
+
+plot_quantitative <- function(df) {
+  vars_num <- names(df)[sapply(df, is.numeric)]
+  
+  plots <- lapply(vars_num, function(v) {
+    ggplot(df, aes(x = .data[[v]])) +
+      geom_histogram(aes(y = after_stat(density)),
+                     bins = 30,
+                     fill = "grey80",
+                     color = "black") +
+      geom_density(alpha = 0.2, color = "blue") +
+      labs(title = v, x = v, y = "Density") +
+      theme_minimal()
+  })
+  
+  do.call(grid.arrange, c(plots, ncol = 3))
+}
+
+plot_quantitative(data)
+```
 
 **3. Poursuivez avec une analyse descriptive bidimensionnelle. Utilisez des techniques de visualisation: par exemple les nuages de points (scatterplot), des graphes des corrélations, des boîtes à moustaches parallèles,mosaicplot... Quelles variables semblent liées ?**
+
+```{r}
+
+vars_num <- names(data)[sapply(data, is.numeric)]
+
+ggpairs(data[, vars_num])  
+```
 
 4\. Réalisez une analyse en composantes principales des variables explicatives quantitatives et interprétez les
 
