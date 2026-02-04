@@ -1,0 +1,31 @@
+```{r}
+library(ggplot2)
+```
+
+# Importation des données
+
+```{r}
+
+```
+
+# Analyse Exploratoire
+
+## 
+
+
+
+
+
+
+
+
+
+**1. Commencez par vérifier la nature des différentes variables et leur encodage. N’oubliez pas de convertir toutes les variables qualitatives.**
+
+**2. Commencez l’exploration par une analyse descriptive unidimensionnelle des données. Des transformationsdes variables quantitatives vous semblent-t-elles pertinentes ?**
+
+**3. Poursuivez avec une analyse descriptive bidimensionnelle. Utilisez des techniques de visualisation: par exemple les nuages de points (scatterplot), des graphes des corrélations, des boîtes à moustaches parallèles,mosaicplot... Quelles variables semblent liées ?**
+
+4\. Réalisez une analyse en composantes principales des variables explicatives quantitatives et interprétez les
+
+résultats. Visualisez les dépendances éventuelles entre les variables à prédire et les variables explicatives.
