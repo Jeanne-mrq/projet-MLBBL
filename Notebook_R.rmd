@@ -83,3 +83,7 @@ corrplot(cor(data[, vars_num]),method="ellipse")
 **4. Réalisez une analyse en composantes principales des variables explicatives quantitatives et interprétez les**
 
 résultats. Visualisez les dépendances éventuelles entre les variables à prédire et les variables explicatives.
+
+```{r}
+
+```
