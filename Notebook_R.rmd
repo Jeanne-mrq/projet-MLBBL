@@ -127,7 +127,7 @@ for (col in quali_cols) {
 
 ```{r}
 vars_num <- names(data)[sapply(data, is.numeric)]
-ggpairs(data[, vars_num])  
+
 ```
 
 ```{r}
@@ -135,9 +135,8 @@ ggpairs(data[, vars_num])
 vars_num <- names(data)[sapply(data, is.numeric)]
 
 ggpairs(
-  data,
-  columns = vars_num,
-  aes(alpha = 0.3)
+  data[, c(vars_num, "Heart_Disease_Risk")],
+  mapping = aes(alpha = 0.3, color = Heart_Disease_Risk)
 ) 
 
 library(corrplot)
