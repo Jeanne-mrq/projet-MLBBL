@@ -27,7 +27,7 @@ data$Heart_Disease_Risk <- as.factor(data$Heart_Disease_Risk)
 data$Sleep_Hours <- as.factor(data$Sleep_Hours)
 data$Stress_Level <- as.factor(data$Stress_Level)
 
-
+print(str(data))
 ```
 
 **2. Commencez l’exploration par une analyse descriptive unidimensionnelle des données. Des transformations des variables quantitatives vous semblent-t-elles pertinentes ?**
@@ -52,17 +52,81 @@ plot_quantitative <- function(df) {
   })
   
   do.call(grid.arrange, c(plots, ncol = 3))
+
 }
 
+
+
 plot_quantitative(data)
+
+```
+
+Certaines data ne sont pas symétriques, on applique un log
+
+```{r}
+data[, "LogWeight_kg"] <- log(data[, "Weight_kg"])
+data[, "LogBMI"] <- log(data[, "BMI"])
+data[, "LogHeight_cm"] <- log(data[, "Height_cm"])
+
+# Supprimer plusieurs colonnes à la fois
+data <- data[, !colnames(data) %in% c("Weight_kg", "BMI", "Height_cm")]
+plot_quantitative(data)
+
+
+# Colonnes quantitatives
+quanti_cols <- c("Age","LogHeight_cm","LogWeight_kg","LogBMI",
+                 "Systolic_BP","Diastolic_BP",
+                 "Cholesterol_Total","Cholesterol_LDL",
+                 "Cholesterol_HDL","Fasting_Blood_Sugar")
+
+# Colonnes qualitatives
+quali_cols <- c("Gender","Smoking_Status","Alcohol_Consumption",
+                "Physical_Activity_Level","Family_History",
+                "Stress_Level","Sleep_Hours","Heart_Disease_Risk")
 ```
 
 **3. Poursuivez avec une analyse descriptive bidimensionnelle. Utilisez des techniques de visualisation: par exemple les nuages de points (scatterplot), des graphes des corrélations, des boîtes à moustaches parallèles,mosaicplot... Quelles variables semblent liées ?**
 
 ```{r}
+library(tidyr)
+library(dplyr)
 
+# Variables quantitatives
+quanti_cols <- c("Age",
+                 "Systolic_BP","Diastolic_BP",
+                 "Cholesterol_Total","Cholesterol_LDL",
+                 "Cholesterol_HDL","Fasting_Blood_Sugar")
+
+# Convertir en format long
+data_long <- data %>%
+  select(all_of(c("Heart_Disease_Risk", quanti_cols))) %>%
+  pivot_longer(cols = all_of(quanti_cols),
+               names_to = "Variable",
+               values_to = "Value")
+
+# Boxplots côte à côte pour chaque variable
+ggplot(data_long, aes(x = Variable, y = Value, fill = Heart_Disease_Risk)) +
+  geom_boxplot(position = position_dodge(width = 0.8)) +  # <--- boxplots côte à côte
+  scale_fill_manual(values = c("0" = "lightblue", "1" = "salmon"), labels = c("No", "Yes")) +
+  labs(x = "Variable", y = "Value", fill = "Heart Disease Risk",
+       title = "Distribution des variables quantitatives selon Heart Disease Risk") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+for (col in quali_cols) {
+  p <- ggplot(data, aes_string(x = col, fill = "Heart_Disease_Risk")) +
+    geom_bar(position = "fill") +
+    ylab("Proportion") +
+    ggtitle(paste("Proportion de risque de maladie cardiaque par", col)) +
+    theme_minimal()
+  print(p)
+}
+
+```
+
+```{r}
 vars_num <- names(data)[sapply(data, is.numeric)]
-
 ggpairs(data[, vars_num])  
 ```
 
@@ -73,7 +137,7 @@ vars_num <- names(data)[sapply(data, is.numeric)]
 ggpairs(
   data,
   columns = vars_num,
-  aes(alpha = 0.6)
+  aes(alpha = 0.3)
 ) 
 
 library(corrplot)
@@ -85,5 +149,41 @@ corrplot(cor(data[, vars_num]),method="ellipse")
 résultats. Visualisez les dépendances éventuelles entre les variables à prédire et les variables explicatives.
 
 ```{r}
+
+library(FactoMineR)
+
+
+
+
+acp <- PCA(data[, c(quanti_cols, quali_cols)],
+           scale.unit = TRUE,
+           graph = FALSE,
+           quali.sup = length(quanti_cols) + seq_along(quali_cols),
+           ncp = 7)
+
+
+
+# Décroissance des valeurs propres
+
+library(gridExtra)
+library(factoextra)
+g1<-fviz_eig(acp, addlabels = TRUE, ylim = c(0, 40))
+library(reshape2)
+g2<-ggplot(melt(acp$ind$coord),aes(x=Var2,y=value))+
+  geom_boxplot()+
+  xlab("")
+grid.arrange(g1,g2,ncol=2)
+# 
+library(corrplot)
+corrplot(acp$var$cor, is.corr=FALSE,method="ellipse")
+```
+
+```{r}
+ fviz_pca_var(acp)
+fviz_pca_ind(acp,col.ind="contrib",label="none",gradient.cols = c("white", "#2E9FDF", "#FC4E07" ), repel = TRUE)
+fviz_pca_var(acp,axes=c(1,2), repel = TRUE)
+
+fviz_pca_ind(acp,col.ind="contrib",label="none",gradient.cols = c("white", "#2E9FDF", "#FC4E07" ),axes=c(1,3), repel = TRUE)
+fviz_pca_var(acp,axes=c(1,3), repel = TRUE)
 
 ```
