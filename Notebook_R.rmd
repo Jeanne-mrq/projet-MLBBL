@@ -186,3 +186,165 @@ fviz_pca_ind(acp,col.ind="contrib",label="none",gradient.cols = c("white", "#2E9
 fviz_pca_var(acp,axes=c(1,3), repel = TRUE)
 
 ```
+
+# Modélisation
+
+1.  Divisez le jeu de données en un échantillon d’apprentissage et un échantillon test. Vous prendrez un pourcentage de 20% pour l’échantillon test. Pourquoi cette étape est-elle nécessaire lorsque nous nous concentrons sur les performances des algorithmes ?
+
+```{r}
+quanti_cols <- c("Age","LogHeight_cm","LogWeight_kg","LogBMI",
+                 "Systolic_BP","Diastolic_BP",
+                 "Cholesterol_Total","Cholesterol_LDL",
+                 "Cholesterol_HDL","Fasting_Blood_Sugar")
+library(caret)
+trainIndex<-createDataPartition(data[,16],1,p=0.8, list=FALSE)
+
+trainData<-data[trainIndex,]
+testData<-data[-trainIndex,]
+```
+
+```{r}
+
+```
+
+```{r}
+params<-preProcess(trainData,method=c("center","scale"))
+TrainCenter<-predict(params,trainData)
+
+TestCenter<-predict(params,testData)
+
+TrainCenter<-TrainCenter[,-1]
+TestCenter<- TestCenter[,-1]
+summary(TrainCenter)
+summary(TestCenter)
+```
+
+```{r}
+gplot.res <- function(x, y, titre = "titre"){
+    ggplot(data.frame(x=x, y=y),aes(x,y))+
+    geom_point(col = "blue")+xlim(0, 250)+ylim(-155, 155)+
+    ylab("Résidus")+ xlab("Valeurs prédites")+
+    ggtitle(titre)+
+    geom_hline(yintercept = 0,col="green")
+}
+```
+
+## Modélisation modèle Gaussien
+
+2.  Comparez les performances d’un modèle linéaire (éventuellement généralisé) avec/sans sélection de vari- ables, avec/sans pénalisatio
+
+```{r}
+# estimation du modèle sans interaction
+# Utiliser lm() pour une régression linéaire multiple
+reg.logit <- glm(Heart_Disease_Risk ~ .*. , 
+                 data = TrainCenter, 
+                 family = "binomial")
+
+
+# Extraction (identique à votre code)
+res.lm <- residuals(reg.lm)
+fit.lm <- fitted(reg.lm)
+
+# Afficher le résumé complet (Coefficients, R², p-values)
+summary(reg.logit)
+```
+
+```{r}
+# Tracer les 4 graphiques de diagnostic standard
+par(mfrow = c(2, 2))
+plot(reg.logit)
+```
+
+```{r}
+# Prévision du modèle quadratique
+pred.log <- predict(reg.logit, newdata = TestCenter, type = "response")
+# 1. On transforme les probabilités en classes (Seuil à 0.5)
+pred.class <- ifelse(pred.log > 0.5, "Yes", "No") 
+
+# 2. Création de la matrice de confusion (Base R)
+conf_matrix <- table(Prédiction = pred.class, Réel = TestCenter$Heart_Disease_Risk)
+print(conf_matrix)
+```
+
+```{r}
+n <- nrow(TrainCenter)
+
+# Sélection descendante basée sur le BIC
+model_bic <- step(reg.logit, 
+                  direction = "backward", 
+                  k = log(n), 
+                  trace = 0)
+
+# Voir le modèle final retenu
+summary(model_bic)
+```
+
+```{r}
+# Prévision du modèle quadratique
+pred.log <- predict(model_bic, newdata = TestCenter, type = "response")
+# 1. On transforme les probabilités en classes (Seuil à 0.5)
+pred.class <- ifelse(pred.log > 0.5, "Yes", "No") 
+
+# 2. Création de la matrice de confusion (Base R)
+conf_matrix <- table(Prédiction = pred.class, Réel = TestCenter$Heart_Disease_Risk)
+print(conf_matrix)
+```
+
+```{r}
+library(glmnet)
+
+# Correction du code pour une classification (Lasso Logistique)
+x.mat <- model.matrix(Heart_Disease_Risk ~ . - 1, data = TrainCenter)
+y.vec <- TrainCenter$Heart_Disease_Risk
+
+# L'argument family = "binomial" est CRUCIAL ici
+
+
+reg.lasso <- glmnet(x = x.mat, 
+                    y = y.vec, 
+                    family = "binomial") 
+
+# On relance le plot
+plot(reg.lasso, xvar = "lambda", label = TRUE)
+legend("topright", 
+legend = paste(1:ncol(x.mat), " - ", colnames(x.mat)))
+```
+
+```{r}
+library(ggfortify)
+library(ggplot2)
+
+reg.lasso.cv <- cv.glmnet(y = TrainCenter[, 15], x = x.mat, family = "binomial")
+#plot(reg.lasso.cv)
+autoplot(reg.lasso.cv)
+
+# valeur estimée
+paste("CV estimate of lambda :", round(reg.lasso.cv$lambda.1se, 20))
+# modèle correspondant
+coef(reg.lasso.cv, s = "lambda.1se")
+
+```
+
+```{r}
+gplot.res <- function(x, y, titre = "titre"){
+    ggplot(data.frame(x=x, y=y),aes(x,y))+
+    geom_point(col = "blue")+xlim(0, 250)+ylim(-155, 155)+
+    ylab("Résidus")+ xlab("Valeurs prédites")+
+    ggtitle(titre)+
+    geom_hline(yintercept = 0,col="green")
+}
+
+
+fit.lasso <- predict(reg.lasso.cv, s = "lambda.min", newx = x.mat)
+res.lasso <- TrainCenter$Heart_Disease_Risk - fit.lasso
+
+fit.lasso.1se <- predict(reg.lasso.cv, s = "lambda.1se", newx = x.mat)
+res.lasso.1se <- TrainCenter$Heart_Disease_Risk - fit.lasso.1se 
+
+# Graphe des résidus
+options(repr.plot.width = 12, repr.plot.height = 4)
+par(mfrow = c(1, 3))
+gplot.res(fit.lm, res.lm, "Linéaire, sans sélection")
+gplot.res(fit.lasso, res.lasso, "Linéaire, pénalité L1, lambda min")
+gplot.res(fit.lasso.1se, res.lasso.1se, "Linéaire, pénalité L1, lambda 1se") 
+```
