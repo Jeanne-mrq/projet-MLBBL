@@ -297,7 +297,6 @@ library(glmnet)
 x.mat <- model.matrix(Heart_Disease_Risk ~ . - 1, data = TrainCenter)
 y.vec <- TrainCenter$Heart_Disease_Risk
 
-# L'argument family = "binomial" est CRUCIAL ici
 
 
 reg.lasso <- glmnet(x = x.mat, 
@@ -314,12 +313,12 @@ legend = paste(1:ncol(x.mat), " - ", colnames(x.mat)))
 library(ggfortify)
 library(ggplot2)
 
-reg.lasso.cv <- cv.glmnet(y = TrainCenter[, 15], x = x.mat, family = "binomial")
+reg.lasso.cv <- cv.glmnet(y = TrainCenter[, 15], x = x.mat, family = "binomial", nfolds = 10)
 #plot(reg.lasso.cv)
 autoplot(reg.lasso.cv)
 
 # valeur estimée
-paste("CV estimate of lambda :", round(reg.lasso.cv$lambda.1se, 20))
+paste("CV estimate of lambda :", round(reg.lasso.cv$lambda.1se, 10))
 # modèle correspondant
 coef(reg.lasso.cv, s = "lambda.1se")
 
@@ -334,17 +333,21 @@ gplot.res <- function(x, y, titre = "titre"){
     geom_hline(yintercept = 0,col="green")
 }
 
+# 1. Préparer la matrice de test (indispensable pour glmnet)
+x.test <- model.matrix(Heart_Disease_Risk ~ . - 1, data = TestCenter)
 
-fit.lasso <- predict(reg.lasso.cv, s = "lambda.min", newx = x.mat)
-res.lasso <- TrainCenter$Heart_Disease_Risk - fit.lasso
+# 2. Prédiction en précisant le lambda (s) et la matrice (newx)
+# On utilise reg.lasso.cv (votre objet de validation croisée)
+pred.lasso <- predict(reg.lasso.cv, 
+                      newx = x.test, 
+                      s = "lambda.min", 
+                      type = "response")
 
-fit.lasso.1se <- predict(reg.lasso.cv, s = "lambda.1se", newx = x.mat)
-res.lasso.1se <- TrainCenter$Heart_Disease_Risk - fit.lasso.1se 
+# 3. Transformation en classes
+pred.classlasso <- ifelse(pred.lasso > 0.5, "Yes", "No") 
 
-# Graphe des résidus
-options(repr.plot.width = 12, repr.plot.height = 4)
-par(mfrow = c(1, 3))
-gplot.res(fit.lm, res.lm, "Linéaire, sans sélection")
-gplot.res(fit.lasso, res.lasso, "Linéaire, pénalité L1, lambda min")
-gplot.res(fit.lasso.1se, res.lasso.1se, "Linéaire, pénalité L1, lambda 1se") 
+# 4. Matrice de confusion
+conf_matrix <- table(Prédiction = pred.classlasso, Réel = TestCenter$Heart_Disease_Risk)
+print(conf_matrix)
+
 ```
