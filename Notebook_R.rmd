@@ -186,6 +186,7 @@ fviz_pca_ind(acp,col.ind="contrib",label="none",gradient.cols = c("white", "#2E9
 fviz_pca_var(acp,axes=c(1,3), repel = TRUE)
 
 ```
+<<<<<<< Updated upstream
 
 # Modélisation
 
@@ -351,3 +352,5 @@ conf_matrix <- table(Prédiction = pred.classlasso, Réel = TestCenter$Heart_Dis
 print(conf_matrix)
 
 ```
+=======
+>>>>>>> Stashed changes
