@@ -186,7 +186,8 @@ fviz_pca_ind(acp,col.ind="contrib",label="none",gradient.cols = c("white", "#2E9
 fviz_pca_var(acp,axes=c(1,3), repel = TRUE)
 
 ```
-<<<<<<< Updated upstream
+
+\<\<\<\<\<\<\< Updated upstream
 
 # Modélisation
 
@@ -234,17 +235,19 @@ gplot.res <- function(x, y, titre = "titre"){
 
 2.  Comparez les performances d’un modèle linéaire (éventuellement généralisé) avec/sans sélection de vari- ables, avec/sans pénalisatio
 
+## Modèle loglinéaire 
+
 ```{r}
 # estimation du modèle sans interaction
 # Utiliser lm() pour une régression linéaire multiple
-reg.logit <- glm(Heart_Disease_Risk ~ .*. , 
+reg.logit <- glm(Heart_Disease_Risk ~ . , 
                  data = TrainCenter, 
                  family = "binomial")
 
 
 # Extraction (identique à votre code)
-res.lm <- residuals(reg.lm)
-fit.lm <- fitted(reg.lm)
+res.lm <- residuals(reg.logit)
+fit.lm <- fitted(reg.logit)
 
 # Afficher le résumé complet (Coefficients, R², p-values)
 summary(reg.logit)
@@ -265,7 +268,10 @@ pred.class <- ifelse(pred.log > 0.5, "Yes", "No")
 # 2. Création de la matrice de confusion (Base R)
 conf_matrix <- table(Prédiction = pred.class, Réel = TestCenter$Heart_Disease_Risk)
 print(conf_matrix)
+  
 ```
+
+### Optimisation du modèle par critère BIC
 
 ```{r}
 n <- nrow(TrainCenter)
@@ -280,8 +286,10 @@ model_bic <- step(reg.logit,
 summary(model_bic)
 ```
 
+### Matrice de confusion pour le modele loglinéaire Bic
+
 ```{r}
-# Prévision du modèle quadratique
+# Prévision du modèle 
 pred.log <- predict(model_bic, newdata = TestCenter, type = "response")
 # 1. On transforme les probabilités en classes (Seuil à 0.5)
 pred.class <- ifelse(pred.log > 0.5, "Yes", "No") 
@@ -291,23 +299,23 @@ conf_matrix <- table(Prédiction = pred.class, Réel = TestCenter$Heart_Disease_
 print(conf_matrix)
 ```
 
+## Méthode Lasso
+
 ```{r}
 library(glmnet)
 
 # Correction du code pour une classification (Lasso Logistique)
 x.mat <- model.matrix(Heart_Disease_Risk ~ . - 1, data = TrainCenter)
-y.vec <- TrainCenter$Heart_Disease_Risk
-
+y.vec <- as.numeric(as.character(TrainCenter$Heart_Disease_Risk))
 
 
 reg.lasso <- glmnet(x = x.mat, 
                     y = y.vec, 
                     family = "binomial") 
 
-# On relance le plot
-plot(reg.lasso, xvar = "lambda", label = TRUE)
-legend("topright", 
-legend = paste(1:ncol(x.mat), " - ", colnames(x.mat)))
+plot(reg.lasso)
+
+
 ```
 
 ```{r}
@@ -352,5 +360,3 @@ conf_matrix <- table(Prédiction = pred.classlasso, Réel = TestCenter$Heart_Dis
 print(conf_matrix)
 
 ```
-=======
->>>>>>> Stashed changes
