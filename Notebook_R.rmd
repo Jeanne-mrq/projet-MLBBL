@@ -359,4 +359,5 @@ pred.classlasso <- ifelse(pred.lasso > 0.5, "Yes", "No")
 conf_matrix <- table(Prédiction = pred.classlasso, Réel = TestCenter$Heart_Disease_Risk)
 print(conf_matrix)
 
+
 ```
