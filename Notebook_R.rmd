@@ -359,6 +359,62 @@ print(conf_matrix)
 
 ```
 
+# CART revoir méthode car classification pas bonne, voir laura
+
+```{r, CART}
+library(rpart) 
+library(rpart.plot)
+
+tree.reg <- rpart(
+  Heart_Disease_Risk ~ .,
+  data = TrainCenter,
+  control = rpart.control(cp = 0.001)
+)
+summary(tree.reg)
+```
+
+```{r}
+
+xmat <- xpred.rpart(tree.reg, xval = 10)
+
+# vraie classe
+y <- TrainCenter$Heart_Disease_Risk
+
+# convertir en 0/1 numérique si besoin
+y_num <- as.numeric(as.character(y))
+
+# transformer les prédictions en classes
+pred_class <- ifelse(xmat > 0.5, 1, 0)
+
+# erreur de classification par cp
+CVerr <- apply(pred_class != y_num, 2, sum)
+
+# meilleur cp
+best_cp <- as.numeric(colnames(xmat)[which.min(CVerr)])
+best_cp
+
+```
+
+```{r}
+tree.best <- rpart(
+  Heart_Disease_Risk ~ .,
+  data = TrainCenter,
+  method = "class",
+  control = rpart.control(cp = best_cp)
+)
+par(mfrow = c(1, 1))
+library(partykit)
+plot(as.party(tree.best),
+     type = "simple",
+     gp = gpar(fontsize = 8))
+```
+
+```{r}
+fit.tree=predict(tree.best)
+res.tree=fit.tree-TrainCenter[,"Heart_Disease_Risk"]
+gplot.res(fit.tree,res.tree,"residus de tree.Best")
+```
+
 # SVR SVM
 
 ```{r, Svmreg0}
@@ -375,7 +431,7 @@ summary(svm.reg.tune)
 
 ```{r, SVMBEST}
 
-svm.best = svm(Heart_Disease_risk ~ ., data = TrainCenter, cost = svm.reg.tune$best.parameters$cost, 
+svm.best = svm(Heart_Disease_Risk ~ ., data = TrainCenter, cost = svm.reg.tune$best.parameters$cost, 
     gamma = svm.reg.tune$best.parameters$gamma)
 summary(svm.best)
 
@@ -385,6 +441,11 @@ summary(svm.best)
 fit.svmr=fit.svmr=svm.reg$fitted
 res.svmr=fit.svmr-datappr[,"Heart_Disease_Risk"]
 gplot.res(fit.svmr,res.svmr,titre="")
+```
+
+# 
+
+```         
 ```
 
 # ROC
