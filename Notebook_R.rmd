@@ -1,6 +1,10 @@
 ```{r}
 library(readr)
 library(GGally)
+library(e1071)
+library(pROC)
+library(ROCR)
+
 ```
 
 # Importation des données
@@ -187,8 +191,6 @@ fviz_pca_var(acp,axes=c(1,3), repel = TRUE)
 
 ```
 
-\<\<\<\<\<\<\< Updated upstream
-
 # Modélisation
 
 1.  Divisez le jeu de données en un échantillon d’apprentissage et un échantillon test. Vous prendrez un pourcentage de 20% pour l’échantillon test. Pourquoi cette étape est-elle nécessaire lorsque nous nous concentrons sur les performances des algorithmes ?
@@ -203,10 +205,6 @@ trainIndex<-createDataPartition(data[,16],1,p=0.8, list=FALSE)
 
 trainData<-data[trainIndex,]
 testData<-data[-trainIndex,]
-```
-
-```{r}
-
 ```
 
 ```{r}
@@ -235,7 +233,7 @@ gplot.res <- function(x, y, titre = "titre"){
 
 2.  Comparez les performances d’un modèle linéaire (éventuellement généralisé) avec/sans sélection de vari- ables, avec/sans pénalisatio
 
-## Modèle loglinéaire 
+## Modèle loglinéaire
 
 ```{r}
 # estimation du modèle sans interaction
@@ -359,4 +357,32 @@ pred.classlasso <- ifelse(pred.lasso > 0.5, "Yes", "No")
 conf_matrix <- table(Prédiction = pred.classlasso, Réel = TestCenter$Heart_Disease_Risk)
 print(conf_matrix)
 
+```
+
+# SVR SVM
+
+```{r, Svmreg0}
+svm.reg0 = svm(Heart_Disease_Risk~ ., data = TrainCenter)
+```
+
+```{r, SVRTune}
+#On tune directement car svm classique = tune cost 1
+svm.reg.tune = tune.svm(Heart_Disease_Risk~ ., data = TrainCenter, cost = c(1, 1.5, 2, 2.5, 3, 3.5), 
+    gamma = seq(0.02, 0.1, by = 0.02))
+plot(svm.reg.tune)
+summary(svm.reg.tune)
+```
+
+```{r, SVMBEST}
+
+svm.best = svm(Heart_Disease_risk ~ ., data = TrainCenter, cost = svm.reg.tune$best.parameters$cost, 
+    gamma = svm.reg.tune$best.parameters$gamma)
+summary(svm.best)
+
+
+
+ # computation and graph of the residuals
+fit.svmr=fit.svmr=svm.reg$fitted
+res.svmr=fit.svmr-datappr[,"Heart_Disease_Risk"]
+gplot.res(fit.svmr,res.svmr,titre="")
 ```
