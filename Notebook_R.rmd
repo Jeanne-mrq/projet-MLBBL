@@ -261,10 +261,10 @@ plot(reg.logit)
 # Prévision du modèle quadratique
 pred.log <- predict(reg.logit, newdata = TestCenter, type = "response")
 # 1. On transforme les probabilités en classes (Seuil à 0.5)
-pred.class <- ifelse(pred.log > 0.5, "Yes", "No") 
+pred.log.class <- ifelse(pred.log > 0.5, "Yes", "No") 
 
 # 2. Création de la matrice de confusion (Base R)
-conf_matrix <- table(Prédiction = pred.class, Réel = TestCenter$Heart_Disease_Risk)
+conf_matrix <- table(Prédiction = pred.log.class, Réel = TestCenter$Heart_Disease_Risk)
 print(conf_matrix)
   
 ```
@@ -290,10 +290,10 @@ summary(model_bic)
 # Prévision du modèle 
 pred.log <- predict(model_bic, newdata = TestCenter, type = "response")
 # 1. On transforme les probabilités en classes (Seuil à 0.5)
-pred.class <- ifelse(pred.log > 0.5, "Yes", "No") 
+pred.BIC.class <- ifelse(pred.log > 0.5, "Yes", "No") 
 
 # 2. Création de la matrice de confusion (Base R)
-conf_matrix <- table(Prédiction = pred.class, Réel = TestCenter$Heart_Disease_Risk)
+conf_matrix <- table(Prédiction = pred.BIC.class, Réel = TestCenter$Heart_Disease_Risk)
 print(conf_matrix)
 ```
 
@@ -385,4 +385,23 @@ summary(svm.best)
 fit.svmr=fit.svmr=svm.reg$fitted
 res.svmr=fit.svmr-datappr[,"Heart_Disease_Risk"]
 gplot.res(fit.svmr,res.svmr,titre="")
+```
+
+# ROC
+
+```{r, CurveROC}
+
+par(mfrow = c(1, 1))
+perflogit <- performance(pred.log.class, "tpr", "fpr")
+perfBIC <- performance(pred.BIC.class, "tpr", "fpr")
+perfLasso <- performance(pred.classlasso, "tpr", "fpr")
+perfSVM <- performance(pred.SVM.class, "tpr", "fpr")
+
+
+plot(perflogit, col = "blue",lty=2, main = "Courbe ROC \n Mod. quad. backward AIC ")
+plot(perfBICC,col="orange",lty=2,add=TRUE)
+plot(perfLasoo,col="green",lty=1,add=TRUE) 
+
+legend("right", legend=c("Logit", "Logit + BIC", "Lasso", "SVM"),
+       col=c("blue","orange","green", "red"), lty=c(2,2,1), text.font=1,    cex=0.8)
 ```
