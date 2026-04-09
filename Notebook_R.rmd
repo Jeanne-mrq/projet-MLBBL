@@ -1,49 +1,77 @@
-```{r}
+---
+title: "Analyse du Risque de Maladie Cardiaque"
+author: ""
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    theme: flatly
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r librairies}
 library(readr)
 library(GGally)
 library(e1071)
 library(pROC)
 library(ROCR)
+library(partykit)
 
 ```
 
-# Importation des données
+------------------------------------------------------------------------
 
-```{r}
-path = "https://raw.githubusercontent.com/Jeanne-mrq/projet-MLBBL/refs/heads/main/healthcare_synthetic_data.csv"
+# 1. Importation des données
+
+```{r importation}
+path <- "https://raw.githubusercontent.com/Jeanne-mrq/projet-MLBBL/refs/heads/main/healthcare_synthetic_data.csv"
 data <- read.csv(path)
 ```
 
-# Analyse Exploratoire
+------------------------------------------------------------------------
 
-**1. Commencez par vérifier la nature des différentes variables et leur encodage. N’oubliez pas de convertir toutes les variables qualitatives.**
+# 2. Analyse Exploratoire
 
-```{r}
+## 2.1 Structure et encodage des variables
+
+**Vérification de la nature des variables et conversion des variables qualitatives en facteurs.**
+
+```{r structure-initiale}
 print(str(data))
+```
 
-#Mise en forme quanti/quali          
-data$Gender <- as.factor(data$Gender)
-data$Smoking_Status <- as.factor(data$Smoking_Status)
-data$Family_History <- as.factor(data$Family_History)
+```{r conversion-facteurs}
+data$Gender                  <- as.factor(data$Gender)
+data$Smoking_Status          <- as.factor(data$Smoking_Status)
+data$Family_History          <- as.factor(data$Family_History)
 data$Physical_Activity_Level <- as.factor(data$Physical_Activity_Level)
-data$Alcohol_Consumption <- as.factor(data$Alcohol_Consumption)
-data$Heart_Disease_Risk <- as.factor(data$Heart_Disease_Risk)
-data$Sleep_Hours <- as.factor(data$Sleep_Hours)
-data$Stress_Level <- as.factor(data$Stress_Level)
+data$Alcohol_Consumption     <- as.factor(data$Alcohol_Consumption)
+data$Heart_Disease_Risk      <- as.factor(data$Heart_Disease_Risk)
+data$Sleep_Hours             <- as.factor(data$Sleep_Hours)
+data$Stress_Level            <- as.factor(data$Stress_Level)
 
 print(str(data))
 ```
 
-**2. Commencez l’exploration par une analyse descriptive unidimensionnelle des données. Des transformations des variables quantitatives vous semblent-t-elles pertinentes ?**
+------------------------------------------------------------------------
 
-```{r}
+## 2.2 Analyse unidimensionnelle
 
+**Distribution des variables quantitatives — histogrammes et courbes de densité.**
+
+```{r fonction-plot-quantitatif}
 library(ggplot2)
 library(gridExtra)
 
 plot_quantitative <- function(df) {
   vars_num <- names(df)[sapply(df, is.numeric)]
-  
+
   plots <- lapply(vars_num, function(v) {
     ggplot(df, aes(x = .data[[v]])) +
       geom_histogram(aes(y = after_stat(density)),
@@ -51,418 +79,466 @@ plot_quantitative <- function(df) {
                      fill = "grey80",
                      color = "black") +
       geom_density(alpha = 0.2, color = "blue") +
-      labs(title = v, x = v, y = "Density") +
+      labs(title = v, x = v, y = "Densité") +
       theme_minimal()
   })
-  
-  do.call(grid.arrange, c(plots, ncol = 3))
 
+  do.call(grid.arrange, c(plots, ncol = 3))
 }
 
-
-
 plot_quantitative(data)
-
 ```
 
-Certaines data ne sont pas symétriques, on applique un log
+**Transformation logarithmique** des variables asymétriques (`Weight_kg`, `BMI`, `Height_cm`) pour améliorer la symétrie des distributions.
 
-```{r}
+```{r transformation-log}
 data[, "LogWeight_kg"] <- log(data[, "Weight_kg"])
-data[, "LogBMI"] <- log(data[, "BMI"])
+data[, "LogBMI"]       <- log(data[, "BMI"])
 data[, "LogHeight_cm"] <- log(data[, "Height_cm"])
 
-# Supprimer plusieurs colonnes à la fois
+# Suppression des variables originales remplacées
 data <- data[, !colnames(data) %in% c("Weight_kg", "BMI", "Height_cm")]
+
 plot_quantitative(data)
-
-
-# Colonnes quantitatives
-quanti_cols <- c("Age","LogHeight_cm","LogWeight_kg","LogBMI",
-                 "Systolic_BP","Diastolic_BP",
-                 "Cholesterol_Total","Cholesterol_LDL",
-                 "Cholesterol_HDL","Fasting_Blood_Sugar")
-
-# Colonnes qualitatives
-quali_cols <- c("Gender","Smoking_Status","Alcohol_Consumption",
-                "Physical_Activity_Level","Family_History",
-                "Stress_Level","Sleep_Hours","Heart_Disease_Risk")
 ```
 
-**3. Poursuivez avec une analyse descriptive bidimensionnelle. Utilisez des techniques de visualisation: par exemple les nuages de points (scatterplot), des graphes des corrélations, des boîtes à moustaches parallèles,mosaicplot... Quelles variables semblent liées ?**
+```{r definition-colonnes}
+# Colonnes quantitatives
+quanti_cols <- c("Age", "LogHeight_cm", "LogWeight_kg", "LogBMI",
+                 "Systolic_BP", "Diastolic_BP",
+                 "Cholesterol_Total", "Cholesterol_LDL",
+                 "Cholesterol_HDL", "Fasting_Blood_Sugar")
 
-```{r}
+# Colonnes qualitatives
+quali_cols <- c("Gender", "Smoking_Status", "Alcohol_Consumption",
+                "Physical_Activity_Level", "Family_History",
+                "Stress_Level", "Sleep_Hours", "Heart_Disease_Risk")
+```
+
+------------------------------------------------------------------------
+
+## 2.3 Analyse bidimensionnelle
+
+**Visualisation des liens entre les variables explicatives et la variable cible `Heart_Disease_Risk`.**
+
+```{r boxplots-quanti-vs-cible}
 library(tidyr)
 library(dplyr)
 
-# Variables quantitatives
-quanti_cols <- c("Age",
-                 "Systolic_BP","Diastolic_BP",
-                 "Cholesterol_Total","Cholesterol_LDL",
-                 "Cholesterol_HDL","Fasting_Blood_Sugar")
+# Variables quantitatives retenues pour cette analyse
+quanti_cols_plot <- c("Age", "Systolic_BP", "Diastolic_BP",
+                      "Cholesterol_Total", "Cholesterol_LDL",
+                      "Cholesterol_HDL", "Fasting_Blood_Sugar")
 
-# Convertir en format long
 data_long <- data %>%
-  select(all_of(c("Heart_Disease_Risk", quanti_cols))) %>%
-  pivot_longer(cols = all_of(quanti_cols),
-               names_to = "Variable",
-               values_to = "Value")
+  select(all_of(c("Heart_Disease_Risk", quanti_cols_plot))) %>%
+  pivot_longer(cols = all_of(quanti_cols_plot),
+               names_to  = "Variable",
+               values_to = "Valeur")
 
-# Boxplots côte à côte pour chaque variable
-ggplot(data_long, aes(x = Variable, y = Value, fill = Heart_Disease_Risk)) +
-  geom_boxplot(position = position_dodge(width = 0.8)) +  # <--- boxplots côte à côte
-  scale_fill_manual(values = c("0" = "lightblue", "1" = "salmon"), labels = c("No", "Yes")) +
-  labs(x = "Variable", y = "Value", fill = "Heart Disease Risk",
-       title = "Distribution des variables quantitatives selon Heart Disease Risk") +
+ggplot(data_long, aes(x = Variable, y = Valeur, fill = Heart_Disease_Risk)) +
+  geom_boxplot(position = position_dodge(width = 0.8)) +
+  scale_fill_manual(values = c("0" = "lightblue", "1" = "salmon"),
+                    labels = c("Non", "Oui")) +
+  labs(x = "Variable", y = "Valeur", fill = "Risque cardiaque",
+       title = "Distribution des variables quantitatives selon le risque de maladie cardiaque") +
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
 
-
+```{r barplots-quali-vs-cible}
 for (col in quali_cols) {
   p <- ggplot(data, aes_string(x = col, fill = "Heart_Disease_Risk")) +
     geom_bar(position = "fill") +
+    scale_fill_manual(values = c("0" = "lightblue", "1" = "salmon"),
+                      labels = c("Non", "Oui")) +
     ylab("Proportion") +
-    ggtitle(paste("Proportion de risque de maladie cardiaque par", col)) +
+    labs(fill = "Risque cardiaque",
+         title = paste("Proportion de risque cardiaque par", col)) +
     theme_minimal()
   print(p)
 }
-
 ```
 
-```{r}
-vars_num <- names(data)[sapply(data, is.numeric)]
-
-```
-
-```{r}
+```{r ggpairs-et-correlations}
+library(corrplot)
 
 vars_num <- names(data)[sapply(data, is.numeric)]
 
 ggpairs(
   data[, c(vars_num, "Heart_Disease_Risk")],
   mapping = aes(alpha = 0.3, color = Heart_Disease_Risk)
-) 
+)
 
-library(corrplot)
-corrplot(cor(data[, vars_num]),method="ellipse")
+corrplot(cor(data[, vars_num]), method = "ellipse")
 ```
 
-**4. Réalisez une analyse en composantes principales des variables explicatives quantitatives et interprétez les**
+------------------------------------------------------------------------
 
-résultats. Visualisez les dépendances éventuelles entre les variables à prédire et les variables explicatives.
+## 2.4 Analyse en Composantes Principales (ACP)
 
-```{r}
+**ACP sur les variables quantitatives — visualisation de la structure des données et des liens avec la variable cible.**
 
+```{r acp}
 library(FactoMineR)
-
-
-
+library(factoextra)
+library(reshape2)
 
 acp <- PCA(data[, c(quanti_cols, quali_cols)],
-           scale.unit = TRUE,
-           graph = FALSE,
-           quali.sup = length(quanti_cols) + seq_along(quali_cols),
-           ncp = 7)
+           scale.unit  = TRUE,
+           graph       = FALSE,
+           quali.sup   = length(quanti_cols) + seq_along(quali_cols),
+           ncp         = 7)
 
+# Décroissance des valeurs propres et distribution des composantes
+g1 <- fviz_eig(acp, addlabels = TRUE, ylim = c(0, 40))
+g2 <- ggplot(melt(acp$ind$coord), aes(x = Var2, y = value)) +
+        geom_boxplot() +
+        xlab("")
+grid.arrange(g1, g2, ncol = 2)
 
-
-# Décroissance des valeurs propres
-
-library(gridExtra)
-library(factoextra)
-g1<-fviz_eig(acp, addlabels = TRUE, ylim = c(0, 40))
-library(reshape2)
-g2<-ggplot(melt(acp$ind$coord),aes(x=Var2,y=value))+
-  geom_boxplot()+
-  xlab("")
-grid.arrange(g1,g2,ncol=2)
-# 
-library(corrplot)
-corrplot(acp$var$cor, is.corr=FALSE,method="ellipse")
+# Corrélation variables / composantes
+corrplot(acp$var$cor, is.corr = FALSE, method = "ellipse")
 ```
 
-```{r}
- fviz_pca_var(acp)
-fviz_pca_ind(acp,col.ind="contrib",label="none",gradient.cols = c("white", "#2E9FDF", "#FC4E07" ), repel = TRUE)
-fviz_pca_var(acp,axes=c(1,2), repel = TRUE)
+```{r acp-visualisations}
+# Cercle des corrélations et nuage des individus — axes 1 et 2
+fviz_pca_var(acp, axes = c(1, 2), repel = TRUE)
+fviz_pca_ind(acp, col.ind = "contrib", label = "none",
+             gradient.cols = c("white", "#2E9FDF", "#FC4E07"),
+             repel = TRUE)
 
-fviz_pca_ind(acp,col.ind="contrib",label="none",gradient.cols = c("white", "#2E9FDF", "#FC4E07" ),axes=c(1,3), repel = TRUE)
-fviz_pca_var(acp,axes=c(1,3), repel = TRUE)
-
+# Cercle des corrélations et nuage des individus — axes 1 et 3
+fviz_pca_var(acp, axes = c(1, 3), repel = TRUE)
+fviz_pca_ind(acp, col.ind = "contrib", label = "none",
+             gradient.cols = c("white", "#2E9FDF", "#FC4E07"),
+             axes = c(1, 3), repel = TRUE)
 ```
 
-# Modélisation
+------------------------------------------------------------------------
 
-1.  Divisez le jeu de données en un échantillon d’apprentissage et un échantillon test. Vous prendrez un pourcentage de 20% pour l’échantillon test. Pourquoi cette étape est-elle nécessaire lorsque nous nous concentrons sur les performances des algorithmes ?
+# 3. Modélisation
 
-```{r}
-quanti_cols <- c("Age","LogHeight_cm","LogWeight_kg","LogBMI",
-                 "Systolic_BP","Diastolic_BP",
-                 "Cholesterol_Total","Cholesterol_LDL",
-                 "Cholesterol_HDL","Fasting_Blood_Sugar")
+## 3.1 Partition apprentissage / test
+
+**Division du jeu de données : 80 % apprentissage, 20 % test.**\
+Cette étape est nécessaire pour évaluer les performances des modèles sur des données indépendantes et éviter le surapprentissage.
+
+```{r partition}
 library(caret)
-trainIndex<-createDataPartition(data[,16],1,p=0.8, list=FALSE)
 
-trainData<-data[trainIndex,]
-testData<-data[-trainIndex,]
+quanti_cols <- c("Age", "LogHeight_cm", "LogWeight_kg", "LogBMI",
+                 "Systolic_BP", "Diastolic_BP",
+                 "Cholesterol_Total", "Cholesterol_LDL",
+                 "Cholesterol_HDL", "Fasting_Blood_Sugar")
+
+trainIndex <- createDataPartition(data[, 16], times = 1, p = 0.8, list = FALSE)
+
+trainData <- data[ trainIndex, ]
+testData  <- data[-trainIndex, ]
 ```
 
-```{r}
-params<-preProcess(trainData,method=c("center","scale"))
-TrainCenter<-predict(params,trainData)
+## 3.2 Centrage et réduction
 
-TestCenter<-predict(params,testData)
+```{r centrage-reduction}
+params <- preProcess(trainData, method = c("center", "scale"))
 
-TrainCenter<-TrainCenter[,-1]
-TestCenter<- TestCenter[,-1]
+TrainCenter <- predict(params, trainData)
+TestCenter  <- predict(params, testData)
+
+# Suppression de l'identifiant
+TrainCenter <- TrainCenter[, -1]
+TestCenter  <- TestCenter[, -1]
+
 summary(TrainCenter)
 summary(TestCenter)
 ```
 
-```{r}
-gplot.res <- function(x, y, titre = "titre"){
-    ggplot(data.frame(x=x, y=y),aes(x,y))+
-    geom_point(col = "blue")+xlim(0, 250)+ylim(-155, 155)+
-    ylab("Résidus")+ xlab("Valeurs prédites")+
-    ggtitle(titre)+
-    geom_hline(yintercept = 0,col="green")
+```{r fonction-graphique-residus}
+gplot.res <- function(x, y, titre = "") {
+  ggplot(data.frame(x = x, y = y), aes(x, y)) +
+    geom_point(col = "blue") +
+    xlim(0, 250) + ylim(-155, 155) +
+    ylab("Résidus") + xlab("Valeurs prédites") +
+    ggtitle(titre) +
+    geom_hline(yintercept = 0, col = "green")
 }
 ```
 
-## Modélisation modèle Gaussien
+------------------------------------------------------------------------
 
-2.  Comparez les performances d’un modèle linéaire (éventuellement généralisé) avec/sans sélection de vari- ables, avec/sans pénalisatio
+## 3.3 Régression logistique
 
-## Modèle loglinéaire
+### Modèle complet
 
-```{r}
-# estimation du modèle sans interaction
-# Utiliser lm() pour une régression linéaire multiple
-reg.logit <- glm(Heart_Disease_Risk ~ . , 
-                 data = TrainCenter, 
+```{r logit-complet}
+reg.logit <- glm(Heart_Disease_Risk ~ .,
+                 data   = TrainCenter,
                  family = "binomial")
 
-
-# Extraction (identique à votre code)
-res.lm <- residuals(reg.logit)
-fit.lm <- fitted(reg.logit)
-
-# Afficher le résumé complet (Coefficients, R², p-values)
 summary(reg.logit)
 ```
 
-```{r}
-# Tracer les 4 graphiques de diagnostic standard
+```{r logit-diagnostics}
 par(mfrow = c(2, 2))
 plot(reg.logit)
 ```
 
-```{r}
-# Prévision du modèle quadratique
-pred.log <- predict(reg.logit, newdata = TestCenter, type = "response")
-# 1. On transforme les probabilités en classes (Seuil à 0.5)
-pred.log.class <- ifelse(pred.log > 0.5, "Yes", "No") 
+```{r logit-predictions}
+pred.log       <- predict(reg.logit, newdata = TestCenter, type = "response")
+pred.log.class <- ifelse(pred.log > 0.5, "Yes", "No")
 
-# 2. Création de la matrice de confusion (Base R)
 conf_matrix <- table(Prédiction = pred.log.class, Réel = TestCenter$Heart_Disease_Risk)
 print(conf_matrix)
-  
 ```
 
-### Optimisation du modèle par critère BIC
+### Sélection de variables par critère BIC
 
-```{r}
+```{r logit-bic}
 n <- nrow(TrainCenter)
 
-# Sélection descendante basée sur le BIC
-model_bic <- step(reg.logit, 
-                  direction = "backward", 
-                  k = log(n), 
-                  trace = 0)
+model_bic <- step(reg.logit,
+                  direction = "backward",
+                  k         = log(n),
+                  trace     = 0)
 
-# Voir le modèle final retenu
 summary(model_bic)
 ```
 
-### Matrice de confusion pour le modele loglinéaire Bic
+```{r logit-bic-predictions}
+pred.log.bic   <- predict(model_bic, newdata = TestCenter, type = "response")
+pred.BIC.class <- ifelse(pred.log.bic > 0.5, "Yes", "No")
 
-```{r}
-# Prévision du modèle 
-pred.log <- predict(model_bic, newdata = TestCenter, type = "response")
-# 1. On transforme les probabilités en classes (Seuil à 0.5)
-pred.BIC.class <- ifelse(pred.log > 0.5, "Yes", "No") 
-
-# 2. Création de la matrice de confusion (Base R)
 conf_matrix <- table(Prédiction = pred.BIC.class, Réel = TestCenter$Heart_Disease_Risk)
 print(conf_matrix)
 ```
 
-## Méthode Lasso
+------------------------------------------------------------------------
 
-```{r}
+## 3.4 Régression Lasso
+
+```{r lasso-ajustement}
 library(glmnet)
 
-# Correction du code pour une classification (Lasso Logistique)
 x.mat <- model.matrix(Heart_Disease_Risk ~ . - 1, data = TrainCenter)
 y.vec <- as.numeric(as.character(TrainCenter$Heart_Disease_Risk))
 
-
-reg.lasso <- glmnet(x = x.mat, 
-                    y = y.vec, 
-                    family = "binomial") 
-
+reg.lasso <- glmnet(x = x.mat, y = y.vec, family = "binomial")
 plot(reg.lasso)
-
-
 ```
 
-```{r}
+```{r lasso-cv}
 library(ggfortify)
-library(ggplot2)
 
-reg.lasso.cv <- cv.glmnet(y = TrainCenter[, 15], x = x.mat, family = "binomial", nfolds = 10)
-#plot(reg.lasso.cv)
+reg.lasso.cv <- cv.glmnet(y      = TrainCenter[, 15],
+                           x      = x.mat,
+                           family = "binomial",
+                           nfolds = 10)
+
 autoplot(reg.lasso.cv)
 
-# valeur estimée
 paste("CV estimate of lambda :", round(reg.lasso.cv$lambda.1se, 10))
-# modèle correspondant
 coef(reg.lasso.cv, s = "lambda.1se")
-
 ```
 
-```{r}
-gplot.res <- function(x, y, titre = "titre"){
-    ggplot(data.frame(x=x, y=y),aes(x,y))+
-    geom_point(col = "blue")+xlim(0, 250)+ylim(-155, 155)+
-    ylab("Résidus")+ xlab("Valeurs prédites")+
-    ggtitle(titre)+
-    geom_hline(yintercept = 0,col="green")
-}
-
-# 1. Préparer la matrice de test (indispensable pour glmnet)
+```{r lasso-predictions}
 x.test <- model.matrix(Heart_Disease_Risk ~ . - 1, data = TestCenter)
 
-# 2. Prédiction en précisant le lambda (s) et la matrice (newx)
-# On utilise reg.lasso.cv (votre objet de validation croisée)
-pred.lasso <- predict(reg.lasso.cv, 
-                      newx = x.test, 
-                      s = "lambda.min", 
-                      type = "response")
+pred.lasso      <- predict(reg.lasso.cv, newx = x.test, s = "lambda.min", type = "response")
+pred.classlasso <- ifelse(pred.lasso > 0.5, "Yes", "No")
 
-# 3. Transformation en classes
-pred.classlasso <- ifelse(pred.lasso > 0.5, "Yes", "No") 
-
-# 4. Matrice de confusion
 conf_matrix <- table(Prédiction = pred.classlasso, Réel = TestCenter$Heart_Disease_Risk)
 print(conf_matrix)
-
 ```
 
-# CART revoir méthode car classification pas bonne, voir laura
+------------------------------------------------------------------------
 
-```{r, CART}
-library(rpart) 
+## 3.5 Arbre de décision (CART)
+
+### 3.5.1 Arbre Classique et optimisation par Xerror
+
+```{r cart-ajustement}
+library(rpart)
 library(rpart.plot)
 
 tree.reg <- rpart(
   Heart_Disease_Risk ~ .,
-  data = TrainCenter,
-  control = rpart.control(cp = 0.001)
+  data    = TrainCenter,
+  method  = "class",
+  parms   = list(split = "information"),
+  control = rpart.control(cp = 0.0001)
 )
-summary(tree.reg)
+
+printcp(tree.reg)
+plotcp(tree.reg)
 ```
 
-```{r}
-
-xmat <- xpred.rpart(tree.reg, xval = 10)
-
-# vraie classe
-y <- TrainCenter$Heart_Disease_Risk
-
-# convertir en 0/1 numérique si besoin
-y_num <- as.numeric(as.character(y))
-
-# transformer les prédictions en classes
-pred_class <- ifelse(xmat > 0.5, 1, 0)
-
-# erreur de classification par cp
-CVerr <- apply(pred_class != y_num, 2, sum)
-
-# meilleur cp
-best_cp <- as.numeric(colnames(xmat)[which.min(CVerr)])
+```{r cart-elagage}
+best_cp <- tree.reg$cptable[which.min(tree.reg$cptable[, "xerror"]), "CP"]
 best_cp
 
+tree.pruned <- prune(tree.reg, cp = best_cp)
+
+plot(as.party(tree.pruned), type = "simple",gp = gpar(fontsize = 5))
+print(tree.pruned)
 ```
 
-```{r}
-tree.best <- rpart(
-  Heart_Disease_Risk ~ .,
-  data = TrainCenter,
-  method = "class",
-  control = rpart.control(cp = best_cp)
+```{r cart-predictions}
+pred_treeprune <- predict(tree.pruned, newdata = TestCenter, type = "class")
+
+conf_mat_test <- table(Prédit = pred_treeprune, Réel = TestCenter$Heart_Disease_Risk)
+print(conf_mat_test)
+
+pred_treePrune_prob <- predict(tree.pruned, newdata = TestCenter, type = "prob")[, 2]
+pred_treePrune      <- prediction(pred_treePrune_prob, TestCenter$Heart_Disease_Risk)
+```
+
+### 3.5.2 Optimisation par CV (carret)
+
+```{r, cart-caret}
+cv_control <- trainControl(
+  method          = "cv",
+  number          = 20,
+  classProbs      = TRUE,
+  summaryFunction = twoClassSummary
 )
-par(mfrow = c(1, 1))
-library(partykit)
-plot(as.party(tree.best),
-     type = "simple",
-     gp = gpar(fontsize = 8))
+levels(TrainCenter$Heart_Disease_Risk) <- make.names(levels(TrainCenter$Heart_Disease_Risk))
+levels(TestCenter$Heart_Disease_Risk)  <- make.names(levels(TestCenter$Heart_Disease_Risk))
+
+tree.cv <- train(
+  Heart_Disease_Risk ~ .,
+  data      = TrainCenter,
+  method    = "rpart",
+  metric    = "ROC",
+  trControl = cv_control,
+  tuneGrid  = expand.grid(cp = seq(0.0001, 0.05, by = 0.001))
+)
+
+# Visualisation de la sélection du cp
+plot(tree.cv, main = "Sélection du cp optimal par validation croisée (AUC)")
+
+best_cp <- tree.cv$bestTune$cp
+cat("cp optimal retenu :", best_cp, "\n")
+
+
 ```
+
+```{r, cart-carret-prune}
+
+tree.pruned_carret <- prune(tree.reg, cp = best_cp)
+
+plot(as.party(tree.pruned_carret), type = "simple", gp = gpar(fontsize = 5))
+print(tree.pruned)
+
+```
+
+```{r cart-carret-predictions}
+pred_treeprune_carret <- predict(tree.pruned_carret, newdata = TestCenter, type = "class")
+
+conf_mat_test <- table(Prédit = pred_treeprune_carret, Réel = TestCenter$Heart_Disease_Risk)
+print(conf_mat_test)
+
+pred_treePrune_C_prob <- predict(tree.pruned_carret, newdata = TestCenter, type = "prob")[, 2]
+pred_treePrune_C<- prediction(pred_treePrune_C_prob, TestCenter$Heart_Disease_Risk)
+```
+
+```{r cart-importance}
+importance <- tree.pruned_carret$variable.importance
+
+if (!is.null(importance)) {
+  imp_df <- data.frame(
+    Variable   = names(importance),
+    Importance = as.numeric(importance)
+  ) %>% arrange(desc(Importance))
+
+  ggplot(imp_df, aes(x = reorder(Variable, Importance), y = Importance)) +
+    geom_col(fill = "steelblue") +
+    coord_flip() +
+    labs(title = "Importance des variables — Arbre CART élagué",
+         x = "Variable", y = "Importance") +
+    theme_minimal()
+}
+```
+
+------------------------------------------------------------------------
+
+## 3.8 Random Forest
 
 ```{r}
-fit.tree=predict(tree.best)
-res.tree=fit.tree-TrainCenter[,"Heart_Disease_Risk"]
-gplot.res(fit.tree,res.tree,"residus de tree.Best")
+
 ```
 
-# SVR SVM
+------------------------------------------------------------------------
 
-```{r, Svmreg0}
-svm.reg0 = svm(Heart_Disease_Risk~ ., data = TrainCenter)
+## 3.7 SVM (Support Vector Machine)
+
+```{r svm-initial}
+svm.reg0 <- svm(Heart_Disease_Risk ~ ., data = TrainCenter)
 ```
 
-```{r, SVRTune}
-#On tune directement car svm classique = tune cost 1
-svm.reg.tune = tune.svm(Heart_Disease_Risk~ ., data = TrainCenter, cost = c(1, 1.5, 2, 2.5, 3, 3.5), 
-    gamma = seq(0.02, 0.1, by = 0.02))
+```{r svm-tuning}
+svm.reg.tune <- tune.svm(
+  Heart_Disease_Risk ~ .,
+  data  = TrainCenter,
+  cost  = c(1, 1.5, 2, 2.5, 3, 3.5),
+  gamma = seq(0.02, 0.1, by = 0.02)
+)
+
 plot(svm.reg.tune)
 summary(svm.reg.tune)
 ```
 
-```{r, SVMBEST}
+```{r svm-optimal}
+svm.best <- svm(
+  Heart_Disease_Risk ~ .,
+  data  = TrainCenter,
+  cost  = svm.reg.tune$best.parameters$cost,
+  gamma = svm.reg.tune$best.parameters$gamma
+)
 
-svm.best = svm(Heart_Disease_Risk ~ ., data = TrainCenter, cost = svm.reg.tune$best.parameters$cost, 
-    gamma = svm.reg.tune$best.parameters$gamma)
 summary(svm.best)
-
-
-
- # computation and graph of the residuals
-fit.svmr=fit.svmr=svm.reg$fitted
-res.svmr=fit.svmr-datappr[,"Heart_Disease_Risk"]
-gplot.res(fit.svmr,res.svmr,titre="")
 ```
 
-# 
+------------------------------------------------------------------------
 
-```         
-```
+# 4. Comparaison des modèles — Courbes ROC
 
-# ROC
+```{r courbes-roc}
+# performance() attend un objet prediction() construit à partir des probabilités,
+# pas des classes prédites — on encapsule chaque vecteur de probabilités
 
-```{r, CurveROC}
+labels <- TestCenter$Heart_Disease_Risk
+
+pred_rocr_logit  <- prediction(pred.log,labels)
+pred_rocr_bic    <- prediction(pred.log.bic,labels)
+pred_rocr_lasso  <- prediction(as.vector(pred.lasso), labels)
+pred_rocr_tree   <- prediction(pred_treePrune_prob, labels)
+pred_rocr_tree_C   <- prediction(pred_treePrune_C_prob, labels)
+
+
+# Pour le SVM, il faut les probabilités (activer probability = TRUE dans svm())
+#pred_rocr_svm    <- prediction(attr(predict(svm.best, newdata = TestCenter, probability = TRUE), "probabilities")[, "1"],labels)
+
+perflogit <- performance(pred_rocr_logit, "tpr", "fpr")
+perfBIC   <- performance(pred_rocr_bic,   "tpr", "fpr")
+perfLasso <- performance(pred_rocr_lasso, "tpr", "fpr")
+perfTree  <- performance(pred_rocr_tree,  "tpr", "fpr")
+perfTree_C  <- performance(pred_rocr_tree_C,  "tpr", "fpr")
+
+#perfSVM   <- performance(pred_rocr_svm,   "tpr", "fpr")
 
 par(mfrow = c(1, 1))
-perflogit <- performance(pred.log.class, "tpr", "fpr")
-perfBIC <- performance(pred.BIC.class, "tpr", "fpr")
-perfLasso <- performance(pred.classlasso, "tpr", "fpr")
-perfSVM <- performance(pred.SVM.class, "tpr", "fpr")
+plot(perflogit, col = "blue",   lty = 2, main = "Courbes ROC — Comparaison des modèles")
+plot(perfBIC,   col = "orange", lty = 2, add = TRUE)
+plot(perfLasso, col = "green",  lty = 1, add = TRUE)
+plot(perfTree,  col = "purple", lty = 1, add = TRUE)
+plot(perfTree_C,  col = "red", lty = 1, add = TRUE)
 
+#plot(perfSVM,   col = "red",    lty = 1, add = TRUE)
 
-plot(perflogit, col = "blue",lty=2, main = "Courbe ROC \n Mod. quad. backward AIC ")
-plot(perfBICC,col="orange",lty=2,add=TRUE)
-plot(perfLasoo,col="green",lty=1,add=TRUE) 
-
-legend("right", legend=c("Logit", "Logit + BIC", "Lasso", "SVM"),
-       col=c("blue","orange","green", "red"), lty=c(2,2,1), text.font=1,    cex=0.8)
+legend("bottomright",
+       legend = c("Logit complet", "Logit + BIC", "Lasso", "Arbre élagué", "Arbre élagué par CV"),
+       col    = c("blue", "orange", "green", "purple", "red"),
+       lty    = c(2, 2, 1, 1, 1),
+       cex    = 0.8)
 ```
