@@ -1,0 +1,723 @@
+---
+title: "Prédiction du Cholestérol LDL"
+author: ""
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 4
+    toc_float: true
+    theme: flatly
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r librairies}
+library(readr)
+library(GGally)
+library(e1071)
+library(partykit)
+library(ggplot2)
+library(gridExtra)
+library(tidyr)
+library(dplyr)
+library(corrplot)
+library(FactoMineR)
+library(factoextra)
+library(reshape2)
+library(caret)
+library(glmnet)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+```
+
+------------------------------------------------------------------------
+
+# 1. Importation des données
+
+```{r importation}
+path <- "https://raw.githubusercontent.com/Jeanne-mrq/projet-MLBBL/refs/heads/main/healthcare_synthetic_data.csv"
+data <- read.csv(path)
+```
+
+------------------------------------------------------------------------
+
+# 2. Analyse Exploratoire
+
+## 2.1 Structure et encodage des variables
+
+**Vérification de la nature des variables et conversion des variables qualitatives en facteurs.**
+
+> **Note :** La variable `Heart_Disease_Risk` est exclue des variables explicatives
+
+```{r structure-initiale}
+print(str(data))
+```
+
+```{r conversion-facteurs}
+# Conversion des variables qualitatives en facteurs
+data$Gender                  <- as.factor(data$Gender)
+data$Smoking_Status          <- as.factor(data$Smoking_Status)
+data$Family_History          <- as.factor(data$Family_History)
+data$Physical_Activity_Level <- as.factor(data$Physical_Activity_Level)
+data$Alcohol_Consumption     <- as.factor(data$Alcohol_Consumption)
+data$Sleep_Hours             <- as.factor(data$Sleep_Hours)
+data$Stress_Level            <- as.factor(data$Stress_Level)
+
+# Suppression de Heart_Disease_Risk (non utilisée comme variable explicative)
+data <- data[, !colnames(data) %in% "Heart_Disease_Risk"]
+
+print(str(data))
+```
+
+------------------------------------------------------------------------
+
+## 2.2 Analyse unidimensionnelle
+
+**Distribution des variables quantitatives — histogrammes et courbes de densité.**
+
+```{r plot-quantitatif}
+plot_quantitative <- function(df) {
+  vars_num <- names(df)[sapply(df, is.numeric)]
+
+  plots <- lapply(vars_num, function(v) {
+    ggplot(df, aes(x = .data[[v]])) +
+      geom_histogram(aes(y = after_stat(density)),
+                     bins = 30,
+                     fill = "grey80",
+                     color = "black") +
+      geom_density(alpha = 0.2, color = "steelblue") +
+      labs(title = v, x = v, y = "Densité") +
+      theme_minimal()
+  })
+
+  do.call(grid.arrange, c(plots, ncol = 3))
+}
+
+plot_quantitative(data)
+```
+
+**Transformation logarithmique** des variables asymétriques (`Weight_kg`, `BMI`, `Height_cm`).
+
+```{r}
+vars_to_log <- c("Weight_kg", "BMI", "Height_cm")
+
+for (v in vars_to_log) {
+  data[[paste0("Log", v)]] <- log(data[[v]])
+  data[[v]] <- NULL
+}
+```
+
+```{r}
+plot_quantitative(data)
+```
+
+**Distribution de la variable cible `Cholesterol_LDL`.**
+
+```{r distribution-cible}
+ggplot(data, aes(x = Cholesterol_LDL)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 30,
+                 fill = "steelblue", color = "white", alpha = 0.8) +
+  geom_density(color = "darkblue", linewidth = 1) +
+  labs(title = "Distribution de Cholesterol_LDL",
+       x = "Cholesterol_LDL (mg/dL)", y = "Densité") +
+  theme_minimal()
+
+cat("Statistiques descriptives de Cholesterol_LDL :\n")
+summary(data$Cholesterol_LDL)
+
+```
+
+```{r}
+qqnorm(data$Cholesterol_LDL, main = "QQ-plot — Cholesterol_LDL")
+qqline(data$Cholesterol_LDL, col = "red")
+```
+
+```{r definition-colonnes}
+# Colonnes quantitatives explicatives (hors cible)
+quanti_cols_expl <- c("Age", "LogHeight_cm", "LogWeight_kg", "LogBMI",
+                      "Systolic_BP", "Diastolic_BP",
+                      "Cholesterol_Total", "Cholesterol_HDL",
+                      "Fasting_Blood_Sugar")
+
+# Colonnes qualitatives
+quali_cols <- c("Gender", "Smoking_Status", "Alcohol_Consumption",
+                "Physical_Activity_Level", "Family_History",
+                "Stress_Level", "Sleep_Hours")
+
+# Variable cible
+cible <- "Cholesterol_LDL"
+```
+
+------------------------------------------------------------------------
+
+## 2.3 Analyse bidimensionnelle
+
+**Nuages de points entre `Cholesterol_LDL` et les variables quantitatives explicatives.**
+
+```{r scatterplots-cible}
+data_long_quanti <- data %>%
+  select(all_of(c(cible, quanti_cols_expl))) %>%
+  pivot_longer(cols = all_of(quanti_cols_expl),
+               names_to  = "Variable",
+               values_to = "Valeur")
+
+ggplot(data_long_quanti, aes(x = Valeur, y = Cholesterol_LDL)) +
+  geom_point(alpha = 0.3, color = "steelblue", size = 0.8) +
+  geom_smooth(method = "lm", color = "red", se = TRUE) +
+  facet_wrap(~ Variable, scales = "free_x", ncol = 3) +
+  labs(title = "Cholesterol_LDL vs variables quantitatives explicatives",
+       x = "Valeur de la variable", y = "Cholesterol_LDL") +
+  theme_minimal()
+```
+
+**Boîtes à moustaches : `Cholesterol_LDL` selon les variables qualitatives.**
+
+```{r boxplots-quali-cible}
+
+for (col in quali_cols) {
+  data[[col]] <- as.factor(data[[col]])
+  
+  p <- ggplot(data, aes(x = .data[[col]], y = Cholesterol_LDL, fill = .data[[col]])) +
+    geom_boxplot(alpha = 0.7, show.legend = FALSE) +
+    stat_summary(fun.data = function(x) data.frame(y = max(data$Cholesterol_LDL) + 2,
+                                                    label = paste0("n=", length(x))),
+                 geom = "text", size = 3) +
+    labs(title = paste("Cholesterol_LDL selon", col),
+         x = col, y = "Cholesterol_LDL (mg/dL)") +
+    theme_minimal()
+  print(p)
+}
+```
+
+**Matrice de corrélations entre toutes les variables quantitatives.**
+
+```{r correlations}
+vars_num_all <- names(data)[sapply(data, is.numeric)]
+
+cor_mat <- cor(data[, vars_num_all], use = "complete.obs")
+corrplot(cor_mat, method = "ellipse", tl.cex = 0.8,
+         title = "Matrice de corrélations", mar = c(0, 0, 1, 0))
+
+# Corrélations avec la cible, triées
+cor_cible <- sort(cor_mat[cible, ], decreasing = TRUE)
+cat("\nCorrélations avec Cholesterol_LDL :\n")
+print(round(cor_cible, 3))
+```
+
+**GGpairs sur un sous-ensemble de variables numériques.**
+
+```{r ggpairs}
+ggpairs(
+  data[, c(cible, "Age", "Cholesterol_Total", "Cholesterol_HDL",
+           "Systolic_BP", "Diastolic_BP", "Fasting_Blood_Sugar",
+           "LogWeight_kg", "LogBMI", "LogHeight_cm")],
+  mapping = aes(alpha = 0.2, color = data$Gender),
+  upper   = list(continuous = wrap("cor", size = 2.5)),
+  lower   = list(continuous = wrap("points", size = 0.3))
+) + theme_minimal()
+```
+
+------------------------------------------------------------------------
+
+## 2.4 Analyse en Composantes Principales (ACP)
+
+**ACP sur les variables quantitatives explicatives — visualisation des structures et des liens avec `Cholesterol_LDL`.**
+
+```{r acp}
+# ACP avec Cholesterol_LDL comme variable quantitative supplémentaire
+quanti_all <- c(quanti_cols_expl, cible)
+n_expl     <- length(quanti_cols_expl)
+
+acp <- PCA(data[, c(quanti_all, quali_cols)],
+           scale.unit  = TRUE,
+           graph       = FALSE,
+           quanti.sup  = n_expl + 1,                         # Cholesterol_LDL en supp.
+           quali.sup   = (n_expl + 2):(n_expl + 1 + length(quali_cols)),
+           ncp         = 7)
+
+
+
+
+# Décroissance des valeurs propres
+g1 <- fviz_eig(acp, addlabels = TRUE, ylim = c(0, 50))
+g2 <- ggplot(melt(acp$ind$coord), aes(x = Var2, y = value)) +
+        geom_boxplot() + xlab("")
+grid.arrange(g1, g2, ncol = 2)
+
+# Corrélation variables actives / composantes
+corrplot(acp$var$cor, is.corr = FALSE, method = "ellipse",
+         title = "Corrélations variables / composantes principales",
+         mar   = c(0, 0, 1, 0))
+```
+
+```{r acp-visualisations}
+# Cercle des corrélations axes 1-2 (Cholesterol_LDL en rouge en supp.)
+fviz_pca_var(acp, axes = c(1, 2), repel = TRUE,
+             col.var = "black", col.quanti.sup = "red")
+
+# Nuage des individus colorés par Cholesterol_LDL
+fviz_pca_ind(acp, col.ind = data$Cholesterol_LDL, label = "none",
+             gradient.cols = c("#2166AC", "#F7F7F7", "#D6604D"),
+             repel = TRUE,
+             legend.title = "LDL") +
+  labs(title = "Individus colorés par Cholesterol_LDL (axes 1-2)")
+
+# Axes 1-3
+fviz_pca_var(acp, axes = c(1, 3), repel = TRUE,
+             col.var = "black", col.quanti.sup = "red")
+fviz_pca_ind(acp, axes = c(1, 3), col.ind = data$Cholesterol_LDL,
+             label = "none",
+             gradient.cols = c("#2166AC", "#F7F7F7", "#D6604D"),
+             repel = TRUE,
+             legend.title = "LDL") +
+  labs(title = "Individus colorés par Cholesterol_LDL (axes 1-3)")
+```
+
+------------------------------------------------------------------------
+
+# 3. Modélisation
+
+> **Objectif :** prédire `Cholesterol_LDL` (variable quantitative continue) → **problème de régression**. Les métriques de performance retenues sont le **RMSE**, le **MAE** et le **R²**.
+
+## 3.1 Partition apprentissage / test
+
+**80 % apprentissage, 20 % test.**
+
+Cette étape est indispensable pour évaluer les performances des modèles sur des données **indépendantes** de celles ayant servi à l'entraînement, afin d'estimer honnêtement la capacité de généralisation et d'éviter le surapprentissage.
+
+```{r partition}
+set.seed(42)
+
+trainIndex <- createDataPartition(data[[cible]], times = 1, p = 0.8, list = FALSE)
+
+trainData <- data[ trainIndex, ]
+testData  <- data[-trainIndex, ]
+
+cat("Taille apprentissage :", nrow(trainData), "\n")
+cat("Taille test          :", nrow(testData),  "\n")
+```
+
+## 3.2 Centrage et réduction
+
+```{r centrage-reduction}
+# Centrage/réduction appris sur le train uniquement
+params <- preProcess(trainData, method = c("center", "scale"))
+
+TrainCenter <- predict(params, trainData)
+TestCenter  <- predict(params, testData)
+
+# Suppression de l'identifiant (colonne 1)
+TrainCenter <- TrainCenter[, -1]
+TestCenter  <- TestCenter[, -1]
+
+summary(TrainCenter[, c(cible, quanti_cols_expl)])
+```
+
+```{r fonction-metriques}
+# Fonction utilitaire : calcul des métriques de régression
+metriques_reg <- function(obs, pred, modele = "", lm_model = NULL) {
+  rmse <- sqrt(mean((obs - pred)^2))
+  mae  <- mean(abs(obs - pred))
+  if (!is.null(lm_model)) {
+    r2  <- summary(lm_model)$r.squared
+    mse <- summary(lm_model)$sigma^2
+  } else {
+    r2  <- 1 - sum((obs - pred)^2) / sum((obs - mean(obs))^2)
+    mse <- mean((obs - pred)^2)
+  }
+  cat(sprintf("%-30s RMSE = %.4f | MAE = %.4f | MSE = %.4f | R² = %.4f\n",
+              modele, rmse, mae, mse, r2))
+  invisible(c(RMSE = rmse, MAE = mae, MSE = mse, R2 = r2))
+}
+# Fonction graphique résidus vs prédictions
+gplot.res <- function(obs, pred, titre = "") {
+  df <- data.frame(pred = pred, res = obs - pred)
+  ggplot(df, aes(x = pred, y = res)) +
+    geom_point(color = "steelblue", alpha = 0.5) +
+    geom_hline(yintercept = 0, color = "red") +
+    labs(title = titre, x = "Valeurs prédites", y = "Résidus") +
+    theme_minimal()
+}
+```
+
+------------------------------------------------------------------------
+
+## 3.3 Régression linéaire
+
+### 3.3.1 Modèle complet additif
+
+```{r lm-complet}
+lm.full <- lm(Cholesterol_LDL ~ ., data = TrainCenter)
+summary(lm.full)
+```
+
+```{r lm-diagnostics}
+par(mfrow = c(2, 2))
+plot(lm.full)
+par(mfrow = c(1, 1))
+
+```
+
+```{r lm-predictions}
+pred.lm <- predict(lm.full, newdata = TestCenter)
+res.lm  <- metriques_reg(TestCenter$Cholesterol_LDL, pred.lm, "Régression linéaire complète")
+print(gplot.res(TestCenter$Cholesterol_LDL, pred.lm, "Résidus — Régression linéaire complète"))
+```
+
+### Sélection de variables par critère BIC
+
+```{r lm-bic}
+n <- nrow(TrainCenter)
+
+lm.bic <- step(lm.full,
+               direction = "backward",
+               k         = log(n),
+               trace     = 0)
+
+summary(lm.bic)
+```
+
+```{r lm-bic-predictions}
+pred.lm.bic <- predict(lm.bic, newdata = TestCenter)
+res.lm.bic  <- metriques_reg(TestCenter$Cholesterol_LDL, pred.lm.bic, "Régression linéaire + BIC")
+print(gplot.res(TestCenter$Cholesterol_LDL, pred.lm.bic, "Résidus — Régression linéaire + BIC"))
+```
+
+### 3.3.2 Modéle quadratique 
+
+```{r, lmquad}
+lm.quad <- lm(Cholesterol_LDL ~ . + I(Cholesterol_Total^2) + I(Age^2) + 
+                I(Systolic_BP^2) + I(Diastolic_BP^2) + I(Fasting_Blood_Sugar^2),
+              data = TrainCenter)
+
+summary(lm.quad)
+
+pred.quad <- predict(lm.quad, newdata = TestCenter)
+res.quad  <- metriques_reg(y.test, pred.quad, "LM quadratique")
+print(gplot.res(y.test, pred.quad, "Résidus — LM quadratique"))
+```
+
+### 3.3.3 Interraction avec les plus corrélés + BIC 
+
+```{r}
+lm.inter <- lm(Cholesterol_LDL ~ (Cholesterol_Total + Age + 
+                     Systolic_BP + Cholesterol_HDL)^2, 
+                    data = TrainCenter)
+
+lm.inter.bic <- step(lm.inter,
+                     direction = "backward",
+                     k         = log(n),
+                     trace     = 0)
+
+summary(lm.inter.bic)
+
+pred.inter.bic <- predict(lm.inter.bic, newdata = TestCenter)
+res.inter.bic  <- metriques_reg(y.test, pred.inter.bic, "LM Inter + BIC")
+print(gplot.res(y.test, pred.inter.bic, "Résidus — LM Inter + BIC"))
+```
+
+------------------------------------------------------------------------
+
+## 3.4 Régression Ridge et Lasso
+
+```{r ridge-lasso-preparation}
+x.train <- model.matrix(Cholesterol_LDL ~ . - 1, data = TrainCenter)
+y.train <- TrainCenter$Cholesterol_LDL
+
+x.test  <- model.matrix(Cholesterol_LDL ~ . - 1, data = TestCenter)
+y.test  <- TestCenter$Cholesterol_LDL
+```
+
+### Lasso
+
+```{r,lasso}
+# 1. Chemins de régularisation (sans les ablines pour l'instant)
+reg.lasso <- glmnet(y = y.train, x = x.train, family = "gaussian")
+plot(reg.lasso, xvar = "lambda", label = TRUE)
+
+reg.lasso.cv <- cv.glmnet(y = y.train, x = x.train,
+                           family = "gaussian", nfolds = 10)
+
+cat("lambda.min :", reg.lasso.cv$lambda.min, "\n")
+cat("lambda.1se :", reg.lasso.cv$lambda.1se, "\n")
+
+plot(reg.lasso, xvar = "lambda", label = TRUE,
+     xlim = c(0, 5), ylim = c(0, 1))
+abline(v = -log(reg.lasso.cv$lambda.min), col = "blue", lty = 2, lwd = 2)
+abline(v = -log(reg.lasso.cv$lambda.1se), col = "red",  lty = 2, lwd = 2)
+legend("topright",
+       legend = c("lambda.min", "lambda.1se"),
+       col    = c("blue", "red"),
+       lty    = 2, lwd = 2)
+
+
+# Plot zoomé autour de lambda.1se
+plot(reg.lasso, xvar = "lambda", label = TRUE,
+     xlim = c(3, 5), ylim = c(-0.1, 0.1))
+abline(v = -log(reg.lasso.cv$lambda.min), col = "blue", lty = 2, lwd = 2)
+abline(v = -log(reg.lasso.cv$lambda.1se), col = "red",  lty = 2, lwd = 2)
+legend("topright",
+       legend = c("lambda.min", "lambda.1se"),
+       col    = c("blue", "red"),
+       lty    = 2, lwd = 2)
+```
+
+```{r}
+# Coefficients retenus
+cat("=== Coefficients à lambda.1se ===\n")
+print(coef(reg.lasso.cv, s = "lambda.1se"))
+
+cat("\n=== Coefficients à lambda.min ===\n")
+print(coef(reg.lasso.cv, s = "lambda.min"))
+
+# Prédictions sur le test
+pred.lasso.min <- as.vector(predict(reg.lasso.cv, newx = x.test, s = "lambda.min"))
+pred.lasso.1se <- as.vector(predict(reg.lasso.cv, newx = x.test, s = "lambda.1se"))
+
+res.lasso.min <- metriques_reg(y.test, pred.lasso.min, "Lasso lambda.min")
+res.lasso.1se <- metriques_reg(y.test, pred.lasso.1se, "Lasso lambda.1se")
+
+# Résidus
+print(gplot.res(y.test, pred.lasso.min, "Résidus — Lasso lambda.min"))
+print(gplot.res(y.test, pred.lasso.1se, "Résidus — Lasso lambda.1se"))
+```
+
+**Ridge**
+
+```{r, ridge}
+ridge.cv <- cv.glmnet(x = x.train, y = y.train,
+                      alpha  = 0,
+                      family = "gaussian",
+                      nfolds = 10)
+
+plot(ridge.cv)
+cat("lambda.min :", ridge.cv$lambda.min, "\n")
+cat("lambda.1se :", ridge.cv$lambda.1se, "\n")
+
+pred.ridge.min <- as.vector(predict(ridge.cv, newx = x.test, s = "lambda.min"))
+pred.ridge.1se <- as.vector(predict(ridge.cv, newx = x.test, s = "lambda.1se"))
+
+res.ridge.min <- metriques_reg(y.test, pred.ridge.min, "Ridge lambda.min")
+res.ridge.1se <- metriques_reg(y.test, pred.ridge.1se, "Ridge lambda.1se")
+
+print(gplot.res(y.test, pred.ridge.min, "Résidus — Ridge lambda.min"))
+```
+
+------------------------------------------------------------------------
+
+## 3.5 Arbre de décision CART (régression)
+
+### 3.5.1 Arbre initial et élagage par Xerror
+
+```{r cart-ajustement}
+tree.reg <- rpart(
+  Cholesterol_LDL ~ .,
+  data    = TrainCenter,
+  method  = "anova",          
+  control = rpart.control(cp = 0.0001)
+)
+
+printcp(tree.reg)
+plotcp(tree.reg)
+```
+
+```{r cart-elagage}
+best_cp <- tree.reg$cptable[which.min(tree.reg$cptable[, "xerror"]), "CP"]
+cat("cp optimal (xerror) :", best_cp, "\n")
+
+tree.pruned <- prune(tree.reg, cp = best_cp)
+rpart.plot(tree.pruned, main = "Arbre CART élagué (Cholesterol_LDL)", cex = 0.6)
+```
+
+```{r cart-predictions}
+pred.cart <- predict(tree.pruned, newdata = TestCenter)
+res.cart  <- metriques_reg(y.test, pred.cart, "CART élagué (xerror)")
+print(gplot.res(y.test, pred.cart, "Résidus — CART élagué (xerror)"))
+```
+
+### 3.5.2 Optimisation par validation croisée (caret)
+
+```{r cart-caret}
+cv_control <- trainControl(
+  method = "cv",
+  number = 10
+)
+
+set.seed(42)
+tree.cv <- train(
+  Cholesterol_LDL ~ .,
+  data      = TrainCenter,
+  method    = "rpart",
+  metric    = "RMSE",
+  trControl = cv_control,
+  tuneGrid  = expand.grid(cp = seq(0.0001, 0.05, by = 0.001))
+)
+
+plot(tree.cv, main = "Sélection du cp optimal (RMSE en CV)")
+best_cp_cv <- tree.cv$bestTune$cp
+cat("cp optimal (CV) :", best_cp_cv, "\n")
+```
+
+```{r cart-caret-predictions}
+tree.pruned.cv <- prune(tree.reg, cp = best_cp_cv)
+rpart.plot(tree.pruned.cv, main = "Arbre CART élagué (CV)", cex = 0.6)
+
+pred.cart.cv <- predict(tree.pruned.cv, newdata = TestCenter)
+res.cart.cv  <- metriques_reg(y.test, pred.cart.cv, "CART élagué (CV caret)")
+print(gplot.res(y.test, pred.cart.cv, "Résidus — CART élagué (CV)"))
+```
+
+```{r cart-importance}
+importance_vals <- tree.pruned.cv$variable.importance
+
+if (!is.null(importance_vals)) {
+  imp_df <- data.frame(
+    Variable   = names(importance_vals),
+    Importance = as.numeric(importance_vals)
+  ) %>% arrange(desc(Importance))
+
+  ggplot(imp_df, aes(x = reorder(Variable, Importance), y = Importance)) +
+    geom_col(fill = "steelblue") +
+    coord_flip() +
+    labs(title = "Importance des variables — Arbre CART",
+         x = "Variable", y = "Importance") +
+    theme_minimal()
+}
+```
+
+------------------------------------------------------------------------
+
+## 3.6 Random Forest
+
+```{}
+```
+
+```{}
+```
+
+```{}
+```
+
+------------------------------------------------------------------------
+
+## 3.7 SVR (Support Vector Regression)
+
+```{r svr-initial}
+# Noyau RBF (radial) : choix justifié par la possible non-linéarité des relations
+# Hyperparamètres : cost (C) et gamma
+svr.tune <- tune.svm(
+  Cholesterol_LDL ~ .,
+  data   = TrainCenter,
+  type   = "eps-regression",
+  kernel = "radial",
+  cost   = c(0.5, 1, 2, 5),
+  gamma  = c(0.01, 0.05, 0.1, 0.2),
+  epsilon = c(0.05, 0.1, 0.2)
+)
+
+plot(svr.tune)
+summary(svr.tune)
+```
+
+```{r svr-optimal}
+svr.best <- svm(
+  Cholesterol_LDL ~ .,
+  data    = TrainCenter,
+  type    = "eps-regression",
+  kernel  = "radial",
+  cost    = svr.tune$best.parameters$cost,
+  gamma   = svr.tune$best.parameters$gamma,
+  epsilon = svr.tune$best.parameters$epsilon
+)
+
+summary(svr.best)
+```
+
+```{r svr-predictions}
+pred.svr <- predict(svr.best, newdata = TestCenter)
+res.svr  <- metriques_reg(y.test, pred.svr, "SVR (noyau RBF)")
+print(gplot.res(y.test, pred.svr, "Résidus — SVR"))
+```
+
+------------------------------------------------------------------------
+
+# 4. Comparaison des modèles sur l'échantillon test
+
+```{r comparaison-finale}
+resultats <- data.frame(
+  Modèle = c("Régression linéaire complète",
+              "Régression linéaire + BIC",
+              "Ridge",
+              "Lasso",
+              "CART (xerror)",
+              "CART (CV caret)",
+              "Random Forest",
+              "SVR (RBF)"),
+  RMSE = c(res.lm["RMSE"],   res.lm.bic["RMSE"], res.ridge["RMSE"],
+            res.lasso["RMSE"], res.cart["RMSE"],   res.cart.cv["RMSE"],
+            res.rf["RMSE"],   res.svr["RMSE"]),
+  MAE  = c(res.lm["MAE"],    res.lm.bic["MAE"],  res.ridge["MAE"],
+            res.lasso["MAE"],  res.cart["MAE"],    res.cart.cv["MAE"],
+            res.rf["MAE"],    res.svr["MAE"]),
+  R2   = c(res.lm["R2"],     res.lm.bic["R2"],   res.ridge["R2"],
+            res.lasso["R2"],   res.cart["R2"],     res.cart.cv["R2"],
+            res.rf["R2"],     res.svr["R2"])
+) %>% arrange(RMSE)
+
+print(resultats)
+```
+
+```{r graphique-comparaison}
+resultats_long <- resultats %>%
+  pivot_longer(cols = c("RMSE", "MAE"), names_to = "Métrique", values_to = "Valeur")
+
+ggplot(resultats_long, aes(x = reorder(Modèle, Valeur), y = Valeur, fill = Métrique)) +
+  geom_col(position = "dodge", alpha = 0.85) +
+  coord_flip() +
+  scale_fill_manual(values = c("RMSE" = "steelblue", "MAE" = "tomato")) +
+  labs(title = "Comparaison des modèles — RMSE et MAE (test)",
+       x = NULL, y = "Erreur") +
+  theme_minimal()
+
+ggplot(resultats, aes(x = reorder(Modèle, R2), y = R2)) +
+  geom_col(fill = "seagreen", alpha = 0.85) +
+  coord_flip() +
+  labs(title = "Comparaison des modèles — R² (test)",
+       x = NULL, y = "R²") +
+  theme_minimal()
+```
+
+```{r graphique-predictions-vs-obs}
+# Graphique prédit vs observé pour chaque modèle
+preds_list <- list(
+  "Lm complet"  = pred.lm,
+  "BIC"         = pred.lm.bic,
+  "Lasso"       = pred.lasso,
+  "CART"        = pred.cart.cv,
+  "RF"          = pred.rf,
+  "SVR"         = pred.svr
+)
+
+plots_pvo <- lapply(names(preds_list), function(nm) {
+  df <- data.frame(obs = y.test, pred = preds_list[[nm]])
+  ggplot(df, aes(x = obs, y = pred)) +
+    geom_point(alpha = 0.4, color = "steelblue", size = 0.9) +
+    geom_abline(slope = 1, intercept = 0, color = "red") +
+    labs(title = nm, x = "Observé", y = "Prédit") +
+    theme_minimal()
+})
+
+do.call(grid.arrange, c(plots_pvo, ncol = 3))
+```
+
+------------------------------------------------------------------------
+
+```{}
+```
+
+>
