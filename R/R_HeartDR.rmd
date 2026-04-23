@@ -121,6 +121,8 @@ quali_cols <- c("Gender", "Smoking_Status", "Alcohol_Consumption",
 
 **Visualisation des liens entre les variables explicatives et la variable cible `Heart_Disease_Risk`.**
 
+Visuellement les variables qualitatives qui semblent influencer sont le statut de fumeur, l'activité sportive, les antécédants familiaux et le stress
+
 ```{r boxplots-quanti-vs-cible}
 library(tidyr)
 library(dplyr)
@@ -294,6 +296,8 @@ print(conf_matrix)
 
 ### Sélection de variables par critère BIC
 
+Les variables retenues sont: la pression, l'age, le cholesterol LDL, le sucre dans le sans, le status de fumeur, le stress, l'activité physique, les antécédants familiaux et l'IMC
+
 ```{r logit-bic}
 n <- nrow(TrainCenter)
 
@@ -311,9 +315,10 @@ pred.BIC.class <- ifelse(pred.log.bic > 0.5, "Yes", "No")
 
 conf_matrix <- table(Prédiction = pred.BIC.class, Réel = TestCenter$Heart_Disease_Risk)
 print(conf_matrix)
+  
 ```
 
-------------------------------------------------------------------------
+## Légérement moins bon en prédiction que le modèle complet
 
 ## 3.4 Régression Lasso
 
@@ -351,11 +356,13 @@ conf_matrix <- table(Prédiction = pred.classlasso, Réel = TestCenter$Heart_Dis
 print(conf_matrix)
 ```
 
-------------------------------------------------------------------------
+## Meilleur modèle mais que de très peu
 
 ## 3.5 Arbre de décision (CART)
 
 ### 3.5.1 Arbre Classique et optimisation par Xerror
+
+L'arbre conirmle que le statu de fumeur et l'historique familiale sont les deux variables prépondérantes pour prédire le risque de maladie cardiaque
 
 ```{r cart-ajustement}
 library(rpart)
@@ -393,7 +400,7 @@ pred_treePrune_prob <- predict(tree.pruned, newdata = TestCenter, type = "prob")
 pred_treePrune      <- prediction(pred_treePrune_prob, TestCenter$Heart_Disease_Risk)
 ```
 
-### 3.5.2 Optimisation par CV (carret)
+Beucoup plus de faux négatif et moins de faux positif. Dans la cadre de prévention médical c'est pas ouf \### 3.5.2 Optimisation par CV (carret)
 
 ```{r, cart-caret}
 cv_control <- trainControl(
@@ -441,6 +448,8 @@ print(conf_mat_test)
 pred_treePrune_C_prob <- predict(tree.pruned_carret, newdata = TestCenter, type = "prob")[, 2]
 pred_treePrune_C<- prediction(pred_treePrune_C_prob, TestCenter$Heart_Disease_Risk)
 ```
+
+Encore plus de faux négatif.
 
 ```{r cart-importance}
 importance <- tree.pruned_carret$variable.importance
@@ -542,3 +551,5 @@ legend("bottomright",
        lty    = c(2, 2, 1, 1, 1),
        cex    = 0.8)
 ```
+
+SANS SVM: les arbres sont les moins bons, le reste est équivalent.

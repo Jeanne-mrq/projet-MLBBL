@@ -136,7 +136,7 @@ summary(data$Cholesterol_LDL)
 qqnorm(data$Cholesterol_LDL, main = "QQ-plot — Cholesterol_LDL")
 qqline(data$Cholesterol_LDL, col = "red")
 ```
-
+Pas mal le QQ-plot
 ```{r definition-colonnes}
 # Colonnes quantitatives explicatives (hors cible)
 quanti_cols_expl <- c("Age", "LogHeight_cm", "LogWeight_kg", "LogBMI",
@@ -159,6 +159,8 @@ cible <- "Cholesterol_LDL"
 
 **Nuages de points entre `Cholesterol_LDL` et les variables quantitatives explicatives.**
 
+Evidemment lié au cholestérol total. Visuellement corrélation légére avec l'age
+
 ```{r scatterplots-cible}
 data_long_quanti <- data %>%
   select(all_of(c(cible, quanti_cols_expl))) %>%
@@ -176,7 +178,7 @@ ggplot(data_long_quanti, aes(x = Valeur, y = Cholesterol_LDL)) +
 ```
 
 **Boîtes à moustaches : `Cholesterol_LDL` selon les variables qualitatives.**
-
+Les variables qualitatives ne semblent pas être corrélées avec le cholesterol LDL
 ```{r boxplots-quali-cible}
 
 for (col in quali_cols) {
@@ -381,14 +383,14 @@ lm.bic <- step(lm.full,
 
 summary(lm.bic)
 ```
-
+Il ne reste plus que le cholesterol total
 ```{r lm-bic-predictions}
 pred.lm.bic <- predict(lm.bic, newdata = TestCenter)
 res.lm.bic  <- metriques_reg(TestCenter$Cholesterol_LDL, pred.lm.bic, "Régression linéaire + BIC")
 print(gplot.res(TestCenter$Cholesterol_LDL, pred.lm.bic, "Résidus — Régression linéaire + BIC"))
 ```
-
-### 3.3.2 Modéle quadratique 
+Résultat très proche du modèle complet
+### 3.3.2 Modéle quadratique
 
 ```{r, lmquad}
 lm.quad <- lm(Cholesterol_LDL ~ . + I(Cholesterol_Total^2) + I(Age^2) + 
@@ -402,7 +404,7 @@ res.quad  <- metriques_reg(y.test, pred.quad, "LM quadratique")
 print(gplot.res(y.test, pred.quad, "Résidus — LM quadratique"))
 ```
 
-### 3.3.3 Interraction avec les plus corrélés + BIC 
+### 3.3.3 Interraction avec les plus corrélés + BIC
 
 ```{r}
 lm.inter <- lm(Cholesterol_LDL ~ (Cholesterol_Total + Age + 
@@ -448,8 +450,8 @@ cat("lambda.1se :", reg.lasso.cv$lambda.1se, "\n")
 
 plot(reg.lasso, xvar = "lambda", label = TRUE,
      xlim = c(0, 5), ylim = c(0, 1))
-abline(v = -log(reg.lasso.cv$lambda.min), col = "blue", lty = 2, lwd = 2)
-abline(v = -log(reg.lasso.cv$lambda.1se), col = "red",  lty = 2, lwd = 2)
+abline(v = log(reg.lasso.cv$lambda.min), col = "blue", lty = 2, lwd = 2)
+abline(v = log(reg.lasso.cv$lambda.1se), col = "red",  lty = 2, lwd = 2)
 legend("topright",
        legend = c("lambda.min", "lambda.1se"),
        col    = c("blue", "red"),
@@ -459,8 +461,8 @@ legend("topright",
 # Plot zoomé autour de lambda.1se
 plot(reg.lasso, xvar = "lambda", label = TRUE,
      xlim = c(3, 5), ylim = c(-0.1, 0.1))
-abline(v = -log(reg.lasso.cv$lambda.min), col = "blue", lty = 2, lwd = 2)
-abline(v = -log(reg.lasso.cv$lambda.1se), col = "red",  lty = 2, lwd = 2)
+abline(v = log(reg.lasso.cv$lambda.min), col = "blue", lty = 2, lwd = 2)
+abline(v = log(reg.lasso.cv$lambda.1se), col = "red",  lty = 2, lwd = 2)
 legend("topright",
        legend = c("lambda.min", "lambda.1se"),
        col    = c("blue", "red"),
@@ -486,7 +488,7 @@ res.lasso.1se <- metriques_reg(y.test, pred.lasso.1se, "Lasso lambda.1se")
 print(gplot.res(y.test, pred.lasso.min, "Résidus — Lasso lambda.min"))
 print(gplot.res(y.test, pred.lasso.1se, "Résidus — Lasso lambda.1se"))
 ```
-
+La différence de résultat est minime mieux vaut utilisé 1se qui réduit la complexité du model
 **Ridge**
 
 ```{r, ridge}
@@ -507,7 +509,7 @@ res.ridge.1se <- metriques_reg(y.test, pred.ridge.1se, "Ridge lambda.1se")
 
 print(gplot.res(y.test, pred.ridge.min, "Résidus — Ridge lambda.min"))
 ```
-
+Même conclusion ici
 ------------------------------------------------------------------------
 
 ## 3.5 Arbre de décision CART (régression)
@@ -571,7 +573,7 @@ pred.cart.cv <- predict(tree.pruned.cv, newdata = TestCenter)
 res.cart.cv  <- metriques_reg(y.test, pred.cart.cv, "CART élagué (CV caret)")
 print(gplot.res(y.test, pred.cart.cv, "Résidus — CART élagué (CV)"))
 ```
-
+cp de caret plus élevé on coupe plus. Les résultat sont quand même bon (comparativement a xerror) donc autant couper
 ```{r cart-importance}
 importance_vals <- tree.pruned.cv$variable.importance
 
@@ -589,18 +591,18 @@ if (!is.null(importance_vals)) {
     theme_minimal()
 }
 ```
-
+Cela confirme l'impression visuelle. On garde le cholesterol total et dans une moindre mesure l'age
 ------------------------------------------------------------------------
 
 ## 3.6 Random Forest
 
-```{}
+```         
 ```
 
-```{}
+```         
 ```
 
-```{}
+```         
 ```
 
 ------------------------------------------------------------------------
@@ -655,18 +657,18 @@ resultats <- data.frame(
               "Ridge",
               "Lasso",
               "CART (xerror)",
-              "CART (CV caret)",
-              "Random Forest",
-              "SVR (RBF)"),
-  RMSE = c(res.lm["RMSE"],   res.lm.bic["RMSE"], res.ridge["RMSE"],
-            res.lasso["RMSE"], res.cart["RMSE"],   res.cart.cv["RMSE"],
-            res.rf["RMSE"],   res.svr["RMSE"]),
-  MAE  = c(res.lm["MAE"],    res.lm.bic["MAE"],  res.ridge["MAE"],
-            res.lasso["MAE"],  res.cart["MAE"],    res.cart.cv["MAE"],
-            res.rf["MAE"],    res.svr["MAE"]),
-  R2   = c(res.lm["R2"],     res.lm.bic["R2"],   res.ridge["R2"],
-            res.lasso["R2"],   res.cart["R2"],     res.cart.cv["R2"],
-            res.rf["R2"],     res.svr["R2"])
+              "CART (CV caret)"),
+              #"Random Forest"),
+              #"SVR (RBF)"),
+  RMSE = c(res.lm["RMSE"],   res.lm.bic["RMSE"], res.ridge.1se["RMSE"],
+            res.lasso.1se["RMSE"], res.cart["RMSE"],   res.cart.cv["RMSE"]),
+            #res.rf["RMSE"],   res.svr["RMSE"]),
+  MAE  = c(res.lm["MAE"],    res.lm.bic["MAE"],  res.ridge.1se["MAE"],
+            res.lasso.1se["MAE"],  res.cart["MAE"],    res.cart.cv["MAE"]),
+            #res.rf["MAE"]),    res.svr["MAE"]),
+  R2   = c(res.lm["R2"],     res.lm.bic["R2"],   res.ridge.1se["R2"],
+            res.lasso.1se["R2"],   res.cart["R2"],     res.cart.cv["R2"])
+            #res.rf["R2"]),     #res.svr["R2"])
 ) %>% arrange(RMSE)
 
 print(resultats)
@@ -691,33 +693,47 @@ ggplot(resultats, aes(x = reorder(Modèle, R2), y = R2)) +
        x = NULL, y = "R²") +
   theme_minimal()
 ```
-
+pas grande diff
 ```{r graphique-predictions-vs-obs}
+
 # Graphique prédit vs observé pour chaque modèle
 preds_list <- list(
   "Lm complet"  = pred.lm,
   "BIC"         = pred.lm.bic,
   "Lasso"       = pred.lasso,
-  "CART"        = pred.cart.cv,
-  "RF"          = pred.rf,
-  "SVR"         = pred.svr
+  "CART"        = pred.cart.cv
+  #"RF"          = pred.rf,
+  #"SVR"         = pred.svr
 )
-
 plots_pvo <- lapply(names(preds_list), function(nm) {
-  df <- data.frame(obs = y.test, pred = preds_list[[nm]])
+  # On récupère la prédiction
+  p <- preds_list[[nm]]
+  
+  # On aligne par les noms de lignes (indices communs)
+  # Cela ne garde que les observations présentes à la fois dans y.test et dans la prédiction
+  common_ids <- intersect(names(y.test), names(p))
+  
+  # Si les noms ne sont pas disponibles, on force la taille sur y.test
+  if(length(common_ids) == 0) {
+    df <- data.frame(obs = y.test, pred = p[1:length(y.test)])
+  } else {
+    df <- data.frame(obs = y.test[common_ids], pred = p[common_ids])
+  }
+  
   ggplot(df, aes(x = obs, y = pred)) +
     geom_point(alpha = 0.4, color = "steelblue", size = 0.9) +
     geom_abline(slope = 1, intercept = 0, color = "red") +
-    labs(title = nm, x = "Observé", y = "Prédit") +
+    labs(title = paste(nm, "(n =", nrow(df), ")"), 
+         x = "Observé", y = "Prédit") +
     theme_minimal()
 })
 
-do.call(grid.arrange, c(plots_pvo, ncol = 3))
+do.call(grid.arrange, c(plots_pvo, ncol = 2)) # ncol=2 pour mieux voir
 ```
 
 ------------------------------------------------------------------------
 
-```{}
+```         
 ```
 
 >
