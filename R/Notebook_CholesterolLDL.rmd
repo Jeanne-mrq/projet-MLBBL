@@ -136,7 +136,9 @@ summary(data$Cholesterol_LDL)
 qqnorm(data$Cholesterol_LDL, main = "QQ-plot — Cholesterol_LDL")
 qqline(data$Cholesterol_LDL, col = "red")
 ```
+
 Pas mal le QQ-plot
+
 ```{r definition-colonnes}
 # Colonnes quantitatives explicatives (hors cible)
 quanti_cols_expl <- c("Age", "LogHeight_cm", "LogWeight_kg", "LogBMI",
@@ -177,8 +179,8 @@ ggplot(data_long_quanti, aes(x = Valeur, y = Cholesterol_LDL)) +
   theme_minimal()
 ```
 
-**Boîtes à moustaches : `Cholesterol_LDL` selon les variables qualitatives.**
-Les variables qualitatives ne semblent pas être corrélées avec le cholesterol LDL
+**Boîtes à moustaches : `Cholesterol_LDL` selon les variables qualitatives.** Les variables qualitatives ne semblent pas être corrélées avec le cholesterol LDL
+
 ```{r boxplots-quali-cible}
 
 for (col in quali_cols) {
@@ -316,25 +318,38 @@ TestCenter  <- predict(params, testData)
 # Suppression de l'identifiant (colonne 1)
 TrainCenter <- TrainCenter[, -1]
 TestCenter  <- TestCenter[, -1]
-
+# Extraction de la cible depuis le dataframe centré/réduit
+y.test <- TestCenter$Cholesterol_LDL
 summary(TrainCenter[, c(cible, quanti_cols_expl)])
 ```
 
 ```{r fonction-metriques}
-# Fonction utilitaire : calcul des métriques de régression
 metriques_reg <- function(obs, pred, modele = "", lm_model = NULL) {
   rmse <- sqrt(mean((obs - pred)^2))
   mae  <- mean(abs(obs - pred))
+  
   if (!is.null(lm_model)) {
-    r2  <- summary(lm_model)$r.squared
-    mse <- summary(lm_model)$sigma^2
+    # Extraction directe depuis l'objet lm
+    sum_mod <- summary(lm_model)
+    r2      <- sum_mod$r.squared
+    r2_adj  <- sum_mod$adj.r.squared # Récupération du R² ajusté
+    mse     <- sum_mod$sigma^2
   } else {
+    # Calcul manuel si l'objet lm n'est pas fourni
+    n <- length(obs)
+    p <- 1 # Par défaut, on suppose 1 prédicteur si non spécifié
     r2  <- 1 - sum((obs - pred)^2) / sum((obs - mean(obs))^2)
+    # Formule du R² ajusté : 1 - (1-R²)*((n-1)/(n-p-1))
+    r2_adj <- 1 - ((1 - r2) * (n - 1) / (n - p - 1))
     mse <- mean((obs - pred)^2)
   }
-  cat(sprintf("%-30s RMSE = %.4f | MAE = %.4f | MSE = %.4f | R² = %.4f\n",
-              modele, rmse, mae, mse, r2))
-  invisible(c(RMSE = rmse, MAE = mae, MSE = mse, R2 = r2))
+  
+  # Affichage mis à jour
+  cat(sprintf("%-20s RMSE: %.4f | MAE: %.4f | R²: %.4f | R² Adj: %.4f\n",
+              modele, rmse, mae, r2, r2_adj))
+  
+  # Retourne les valeurs (incluant le R2 ajusté)
+  invisible(c(RMSE = rmse, MAE = mae, MSE = mse, R2 = r2, R2_Adj = r2_adj))
 }
 # Fonction graphique résidus vs prédictions
 gplot.res <- function(obs, pred, titre = "") {
@@ -383,13 +398,17 @@ lm.bic <- step(lm.full,
 
 summary(lm.bic)
 ```
+
 Il ne reste plus que le cholesterol total
+
 ```{r lm-bic-predictions}
 pred.lm.bic <- predict(lm.bic, newdata = TestCenter)
 res.lm.bic  <- metriques_reg(TestCenter$Cholesterol_LDL, pred.lm.bic, "Régression linéaire + BIC")
 print(gplot.res(TestCenter$Cholesterol_LDL, pred.lm.bic, "Résidus — Régression linéaire + BIC"))
 ```
+
 Résultat très proche du modèle complet
+
 ### 3.3.2 Modéle quadratique
 
 ```{r, lmquad}
@@ -438,6 +457,7 @@ y.test  <- TestCenter$Cholesterol_LDL
 ### Lasso
 
 ```{r,lasso}
+
 # 1. Chemins de régularisation (sans les ablines pour l'instant)
 reg.lasso <- glmnet(y = y.train, x = x.train, family = "gaussian")
 plot(reg.lasso, xvar = "lambda", label = TRUE)
@@ -488,8 +508,8 @@ res.lasso.1se <- metriques_reg(y.test, pred.lasso.1se, "Lasso lambda.1se")
 print(gplot.res(y.test, pred.lasso.min, "Résidus — Lasso lambda.min"))
 print(gplot.res(y.test, pred.lasso.1se, "Résidus — Lasso lambda.1se"))
 ```
-La différence de résultat est minime mieux vaut utilisé 1se qui réduit la complexité du model
-**Ridge**
+
+La différence de résultat est minime mieux vaut utilisé 1se qui réduit la complexité du model **Ridge**
 
 ```{r, ridge}
 ridge.cv <- cv.glmnet(x = x.train, y = y.train,
@@ -509,8 +529,8 @@ res.ridge.1se <- metriques_reg(y.test, pred.ridge.1se, "Ridge lambda.1se")
 
 print(gplot.res(y.test, pred.ridge.min, "Résidus — Ridge lambda.min"))
 ```
+
 Même conclusion ici
-------------------------------------------------------------------------
 
 ## 3.5 Arbre de décision CART (régression)
 
@@ -573,7 +593,9 @@ pred.cart.cv <- predict(tree.pruned.cv, newdata = TestCenter)
 res.cart.cv  <- metriques_reg(y.test, pred.cart.cv, "CART élagué (CV caret)")
 print(gplot.res(y.test, pred.cart.cv, "Résidus — CART élagué (CV)"))
 ```
+
 cp de caret plus élevé on coupe plus. Les résultat sont quand même bon (comparativement a xerror) donc autant couper
+
 ```{r cart-importance}
 importance_vals <- tree.pruned.cv$variable.importance
 
@@ -591,18 +613,45 @@ if (!is.null(importance_vals)) {
     theme_minimal()
 }
 ```
+
 Cela confirme l'impression visuelle. On garde le cholesterol total et dans une moindre mesure l'age
-------------------------------------------------------------------------
 
 ## 3.6 Random Forest
 
-```         
+```{r}
+library(randomForest)
 ```
 
-```         
-```
+```{r, randomF}
 
-```         
+rf.mod <- randomForest(
+  Cholesterol_LDL ~ ., 
+  data       = TrainCenter, 
+  ntree      = 500, 
+  importance = TRUE
+)
+
+# Affichage des paramètres par défaut utilisés
+cat("Valeur de mtry utilisée :", rf.mod$mtry, "\n")
+plot(rf.mod, main = "Convergence de l'erreur en fonction du nombre d'arbres")
+# Importance des variables
+importance_rf <- as.data.frame(importance(rf.mod))
+importance_rf$Variable <- rownames(importance_rf)
+
+ggplot(importance_rf, aes(x = reorder(Variable, `%IncMSE`), y = `%IncMSE`)) +
+  geom_col(fill = "darkgreen") +
+  coord_flip() +
+  labs(title = "Importance des variables (Random Forest)",
+       subtitle = "Basée sur l'augmentation de l'erreur quadratique moyenne (%IncMSE)",
+       x = "Variable", y = "% d'augmentation du MSE si la variable est permutée") +
+  theme_minimal()
+
+# Prédictions et performances
+pred.rf <- predict(rf.mod, newdata = TestCenter)
+res.rf  <- metriques_reg(y.test, pred.rf, "Random Forest")
+
+# Graphique des résidus
+print(gplot.res(y.test, pred.rf, "Résidus — Random Forest"))
 ```
 
 ------------------------------------------------------------------------
@@ -693,7 +742,9 @@ ggplot(resultats, aes(x = reorder(Modèle, R2), y = R2)) +
        x = NULL, y = "R²") +
   theme_minimal()
 ```
+
 pas grande diff
+
 ```{r graphique-predictions-vs-obs}
 
 # Graphique prédit vs observé pour chaque modèle
@@ -734,6 +785,8 @@ do.call(grid.arrange, c(plots_pvo, ncol = 2)) # ncol=2 pour mieux voir
 ------------------------------------------------------------------------
 
 ```         
+/r
 ```
 
->
+> ```{}
+> ```
