@@ -653,7 +653,7 @@ res.rf  <- metriques_reg(y.test, pred.rf, "Random Forest")
 # Graphique des résidus
 print(gplot.res(y.test, pred.rf, "Résidus — Random Forest"))
 ```
-
+Le poids est un peu plus important
 ------------------------------------------------------------------------
 
 ## 3.7 SVR (Support Vector Regression)
@@ -788,5 +788,5 @@ do.call(grid.arrange, c(plots_pvo, ncol = 2)) # ncol=2 pour mieux voir
 /r
 ```
 
-> ```{}
+> ```         
 > ```

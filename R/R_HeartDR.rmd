@@ -474,9 +474,55 @@ if (!is.null(importance)) {
 ## 3.8 Random Forest
 
 ```{r}
+library(randomForest)
+
+rf.mod <- randomForest(
+  Heart_Disease_Risk ~ ., 
+  data       = TrainCenter, 
+  ntree      = 500, 
+  importance = TRUE
+)
+
+# Paramètres utilisés
+cat("Valeur de mtry utilisée :", rf.mod$mtry, "\n")
+
+# Courbe de convergence de l'erreur OOB
+plot(rf.mod, main = "Convergence de l'erreur OOB en fonction du nombre d'arbres")
+
+# Importance des variables — pour classification : MeanDecreaseAccuracy
+importance_rf <- as.data.frame(importance(rf.mod))
+importance_rf$Variable <- rownames(importance_rf)
+
+ggplot(importance_rf, aes(x = reorder(Variable, MeanDecreaseAccuracy), y = MeanDecreaseAccuracy)) +
+  geom_col(fill = "darkgreen") +
+  coord_flip() +
+  labs(
+    title    = "Importance des variables (Random Forest)",
+    subtitle = "Basée sur la diminution moyenne de précision (MeanDecreaseAccuracy)",
+    x = "Variable",
+    y = "Diminution moyenne de précision"
+  ) +
+  theme_minimal()
+
+# Prédictions
+pred.rf <- predict(rf.mod, newdata = TestCenter)
+
+# Matrice de confusion
+conf_matrix <- confusionMatrix(pred.rf, y.test)
+print(conf_matrix)
+
+# Métriques de classification
+cat("\n--- Métriques Random Forest ---\n")
+cat("Accuracy  :", round(conf_matrix$overall["Accuracy"], 4), "\n")
+cat("Kappa     :", round(conf_matrix$overall["Kappa"], 4), "\n")
+cat("Sensibilité (Recall) :", round(conf_matrix$byClass["Sensitivity"], 4), "\n")
+cat("Spécificité          :", round(conf_matrix$byClass["Specificity"], 4), "\n")
+cat("Précision (PPV)      :", round(conf_matrix$byClass["Pos Pred Value"], 4), "\n")
+cat("F1-Score             :", round(conf_matrix$byClass["F1"], 4), "\n")
+
 
 ```
-
+Le poids remonte un peu aussi. Mais ça reste les même variable
 ------------------------------------------------------------------------
 
 ## 3.7 SVM (Support Vector Machine)
