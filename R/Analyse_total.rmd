@@ -1,0 +1,917 @@
+---
+title: "Analyse du Risque Cardiaque et Prédiction du Cholestérol LDL"
+author: ""
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 4
+    toc_float: true
+    theme: flatly
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r librairies}
+library(readr)
+library(GGally)
+library(e1071)
+library(pROC)
+library(ROCR)
+library(partykit)
+library(ggplot2)
+library(gridExtra)
+library(tidyr)
+library(dplyr)
+library(corrplot)
+library(FactoMineR)
+library(factoextra)
+library(reshape2)
+library(caret)
+library(glmnet)
+library(glmnet)
+library(ggfortify)
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(doParallel)
+```
+
+------------------------------------------------------------------------
+
+# 1. Importation et préparation des données
+
+```{r importation}
+path <- "https://raw.githubusercontent.com/Jeanne-mrq/projet-MLBBL/refs/heads/main/healthcare_synthetic_data.csv"
+data_raw <- read.csv(path)
+```
+
+## 1.1 Structure et encodage
+
+```{r structure-initiale}
+print(str(data_raw))
+```
+
+```{r conversion-facteurs}
+data_raw$Gender                  <- as.factor(data_raw$Gender)
+data_raw$Smoking_Status          <- as.factor(data_raw$Smoking_Status)
+data_raw$Family_History          <- as.factor(data_raw$Family_History)
+data_raw$Physical_Activity_Level <- as.factor(data_raw$Physical_Activity_Level)
+data_raw$Alcohol_Consumption     <- as.factor(data_raw$Alcohol_Consumption)
+data_raw$Heart_Disease_Risk      <- as.factor(data_raw$Heart_Disease_Risk)
+data_raw$Sleep_Hours             <- as.factor(data_raw$Sleep_Hours)
+data_raw$Stress_Level            <- as.factor(data_raw$Stress_Level)
+
+print(str(data_raw))
+```
+
+## 1.2 Analyse unidimensionnelle et transformations
+
+```{r plot-quantitatif}
+plot_quantitative <- function(df) {
+  vars_num <- names(df)[sapply(df, is.numeric)]
+  plots <- lapply(vars_num, function(v) {
+    ggplot(df, aes(x = .data[[v]])) +
+      geom_histogram(aes(y = after_stat(density)), bins = 30,
+                     fill = "grey80", color = "black") +
+      geom_density(alpha = 0.2, color = "steelblue") +
+      labs(title = v, x = v, y = "Densité") +
+      theme_minimal()
+  })
+  do.call(grid.arrange, c(plots, ncol = 3))
+}
+
+plot_quantitative(data_raw)
+```
+
+**Transformation logarithmique** des variables asymétriques (`Weight_kg`, `BMI`, `Height_cm`).
+
+```{r log-transform}
+vars_to_log <- c("Weight_kg", "BMI", "Height_cm")
+for (v in vars_to_log) {
+  data_raw[[paste0("Log", v)]] <- log(data_raw[[v]])
+  data_raw[[v]] <- NULL
+}
+
+plot_quantitative(data_raw)
+```
+
+```{r definition-colonnes}
+# Variables quantitatives explicatives communes
+quanti_cols <- c("Age", "LogHeight_cm", "LogWeight_kg", "LogBMI",
+                 "Systolic_BP", "Diastolic_BP",
+                 "Cholesterol_Total", "Cholesterol_LDL",
+                 "Cholesterol_HDL", "Fasting_Blood_Sugar")
+
+# Variables qualitatives (hors cibles)
+quali_cols_base <- c("Gender", "Smoking_Status", "Alcohol_Consumption",
+                     "Physical_Activity_Level", "Family_History",
+                     "Stress_Level", "Sleep_Hours")
+```
+
+------------------------------------------------------------------------
+
+# PARTIE 1 — Classification : Risque de Maladie Cardiaque
+
+> **Objectif :** prédire `Heart_Disease_Risk` (variable binaire) → **problème de classification**.
+
+```{r data-classification}
+# On travaille sur une copie avec Heart_Disease_Risk comme cible
+data_classif <- data_raw
+```
+
+## 2. Analyse Exploratoire — Classification
+
+### 2.1 Analyse bidimensionnelle
+
+Visuellement, le statut fumeur, l'activité physique, les antécédents familiaux et le stress semblent influencer le risque cardiaque.
+
+```{r boxplots-quanti-vs-cible-classif}
+quanti_cols_plot <- c("Age", "Systolic_BP", "Diastolic_BP",
+                      "Cholesterol_Total", "Cholesterol_LDL",
+                      "Cholesterol_HDL", "Fasting_Blood_Sugar")
+
+data_long <- data_classif %>%
+  select(all_of(c("Heart_Disease_Risk", quanti_cols_plot))) %>%
+  pivot_longer(cols = all_of(quanti_cols_plot),
+               names_to = "Variable", values_to = "Valeur")
+
+ggplot(data_long, aes(x = Variable, y = Valeur, fill = Heart_Disease_Risk)) +
+  geom_boxplot(position = position_dodge(width = 0.8)) +
+  scale_fill_manual(values = c("0" = "lightblue", "1" = "salmon"),
+                    labels = c("Non", "Oui")) +
+  labs(x = "Variable", y = "Valeur", fill = "Risque cardiaque",
+       title = "Distribution des variables quantitatives selon le risque cardiaque") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r barplots-quali-vs-cible}
+for (col in c(quali_cols_base, "Heart_Disease_Risk")) {
+  if (col == "Heart_Disease_Risk") next
+  p <- ggplot(data_classif, aes_string(x = col, fill = "Heart_Disease_Risk")) +
+    geom_bar(position = "fill") +
+    scale_fill_manual(values = c("0" = "lightblue", "1" = "salmon"),
+                      labels = c("Non", "Oui")) +
+    ylab("Proportion") +
+    labs(fill = "Risque cardiaque",
+         title = paste("Proportion de risque cardiaque par", col)) +
+    theme_minimal()
+  print(p)
+}
+```
+
+```{r correlations-classif}
+vars_num <- names(data_classif)[sapply(data_classif, is.numeric)]
+corrplot(cor(data_classif[, vars_num]), method = "ellipse",
+         title = "Matrice de corrélations", mar = c(0, 0, 1, 0))
+```
+
+### 2.2 ACP
+
+```{r acp-classif}
+quali_all_classif <- c(quali_cols_base, "Heart_Disease_Risk")
+n_quanti <- length(quanti_cols)
+
+acp_classif <- PCA(data_classif[, c(quanti_cols, quali_all_classif)],
+                   scale.unit = TRUE, graph = FALSE,
+                   quali.sup  = (n_quanti + 1):(n_quanti + length(quali_all_classif)),
+                   ncp = 7)
+
+g1 <- fviz_eig(acp_classif, addlabels = TRUE, ylim = c(0, 40))
+g2 <- ggplot(melt(acp_classif$ind$coord), aes(x = Var2, y = value)) +
+        geom_boxplot() + xlab("")
+grid.arrange(g1, g2, ncol = 2)
+
+corrplot(acp_classif$var$cor, is.corr = FALSE, method = "ellipse",
+         title = "Corrélations variables / composantes", mar = c(0, 0, 1, 0))
+
+fviz_pca_var(acp_classif, axes = c(1, 2), repel = TRUE)
+fviz_pca_ind(acp_classif, col.ind = "contrib", label = "none",
+             gradient.cols = c("white", "#2E9FDF", "#FC4E07"), repel = TRUE)
+```
+
+## 3. Modélisation — Classification
+
+### 3.1 Partition et prétraitement
+
+```{r partition-classif}
+set.seed(42)
+
+trainIndex_C <- createDataPartition(data_classif$Heart_Disease_Risk,
+                                    times = 1, p = 0.8, list = FALSE)
+trainData_C <- data_classif[ trainIndex_C, ]
+testData_C  <- data_classif[-trainIndex_C, ]
+
+params_C    <- preProcess(trainData_C, method = c("center", "scale"))
+TrainC      <- predict(params_C, trainData_C)[, -1]
+TestC       <- predict(params_C, testData_C)[, -1]
+
+# Niveaux valides pour caret
+levels(TrainC$Heart_Disease_Risk) <- make.names(levels(TrainC$Heart_Disease_Risk))
+levels(TestC$Heart_Disease_Risk)  <- make.names(levels(TestC$Heart_Disease_Risk))
+
+cat("Train:", nrow(TrainC), "| Test:", nrow(TestC), "\n")
+```
+
+### 3.2 Régression logistique
+
+#### Modèle complet
+
+```{r logit-complet}
+reg.logit <- glm(Heart_Disease_Risk ~ ., data = TrainC, family = "binomial")
+summary(reg.logit)
+
+par(mfrow = c(2, 2)); plot(reg.logit); par(mfrow = c(1, 1))
+
+pred.log       <- predict(reg.logit, newdata = TestC, type = "response")
+pred.log.class <- ifelse(pred.log > 0.5, "X1", "X0")
+table(Prédiction = pred.log.class, Réel = TestC$Heart_Disease_Risk)
+```
+
+#### Sélection BIC
+
+Les variables retenues sont : pression, âge, cholestérol LDL, sucre dans le sang, statut fumeur, stress, activité physique, antécédents familiaux et IMC.
+
+```{r logit-bic}
+n_C <- nrow(TrainC)
+model_bic <- step(reg.logit, direction = "backward", k = log(n_C), trace = 0)
+summary(model_bic)
+
+pred.log.bic   <- predict(model_bic, newdata = TestC, type = "response")
+pred.BIC.class <- ifelse(pred.log.bic > 0.5, "X1", "X0")
+table(Prédiction = pred.BIC.class, Réel = TestC$Heart_Disease_Risk)
+# Légèrement moins bon que le modèle complet
+```
+
+```{r logit-rocr-prep}
+# Préparation des objets ROCR pour la comparaison finale
+pred_rocr_logit <- prediction(pred.log,     TestC$Heart_Disease_Risk)
+pred_rocr_bic   <- prediction(pred.log.bic, TestC$Heart_Disease_Risk)
+perflogit <- performance(pred_rocr_logit, "tpr", "fpr")
+perfBIC   <- performance(pred_rocr_bic,   "tpr", "fpr")
+```
+
+### 3.3 Lasso (classification)
+
+```{r lasso-classif}
+x.mat_C <- model.matrix(Heart_Disease_Risk ~ . - 1, data = TrainC)
+y.vec_C <- as.numeric(as.character(TrainC$Heart_Disease_Risk))  # 0/1
+
+reg.lasso_C    <- glmnet(x = x.mat_C, y = y.vec_C, family = "binomial")
+reg.lasso_C.cv <- cv.glmnet(x = x.mat_C, y = y.vec_C, family = "binomial", nfolds = 10)
+
+autoplot(reg.lasso_C.cv)
+cat("lambda.1se :", round(reg.lasso_C.cv$lambda.1se, 6), "\n")
+coef(reg.lasso_C.cv, s = "lambda.1se")
+
+x.test_C        <- model.matrix(Heart_Disease_Risk ~ . - 1, data = TestC)
+pred.lasso_C    <- predict(reg.lasso_C.cv, newx = x.test_C, s = "lambda.min", type = "response")
+pred.classlasso <- ifelse(pred.lasso_C > 0.5, "X1", "X0")
+table(Prédiction = pred.classlasso, Réel = TestC$Heart_Disease_Risk)
+# Meilleur modèle, mais de très peu
+
+pred_rocr_lasso <- prediction(as.vector(pred.lasso_C), TestC$Heart_Disease_Risk)
+perfLasso       <- performance(pred_rocr_lasso, "tpr", "fpr")
+```
+
+### 3.4 Arbre CART (classification)
+
+#### Élagage par Xerror
+
+L'arbre confirme que le statut fumeur et les antécédents familiaux sont les variables les plus importantes.
+
+```{r cart-classif-xerror}
+tree.reg_C <- rpart(Heart_Disease_Risk ~ ., data = TrainC,
+                    method = "class", parms = list(split = "information"),
+                    control = rpart.control(cp = 0.0001))
+
+printcp(tree.reg_C)
+plotcp(tree.reg_C)
+
+best_cp_C   <- tree.reg_C$cptable[which.min(tree.reg_C$cptable[, "xerror"]), "CP"]
+tree.pruned_C <- prune(tree.reg_C, cp = best_cp_C)
+
+plot(as.party(tree.pruned_C), type = "simple", gp = gpar(fontsize = 5))
+
+pred_tree_class <- predict(tree.pruned_C, newdata = TestC, type = "class")
+table(Prédit = pred_tree_class, Réel = TestC$Heart_Disease_Risk)
+# Beaucoup plus de faux négatifs — problématique en contexte médical
+
+pred_tree_prob <- predict(tree.pruned_C, newdata = TestC, type = "prob")[, 2]
+pred_rocr_tree <- prediction(pred_tree_prob, TestC$Heart_Disease_Risk)
+perfTree       <- performance(pred_rocr_tree, "tpr", "fpr")
+```
+
+#### Optimisation par CV (caret)
+
+```{r cart-classif-caret}
+cv_ctrl_C <- trainControl(method = "cv", number = 20,
+                           classProbs = TRUE, summaryFunction = twoClassSummary)
+
+tree.cv_C <- train(Heart_Disease_Risk ~ ., data = TrainC,
+                   method = "rpart", metric = "ROC",
+                   trControl = cv_ctrl_C,
+                   tuneGrid  = expand.grid(cp = seq(0.0001, 0.05, by = 0.001)))
+
+plot(tree.cv_C, main = "Sélection du cp par CV (AUC)")
+best_cp_cv_C <- tree.cv_C$bestTune$cp
+cat("cp optimal (CV) :", best_cp_cv_C, "\n")
+
+tree.pruned_cv_C <- prune(tree.reg_C, cp = best_cp_cv_C)
+plot(as.party(tree.pruned_cv_C), type = "simple", gp = gpar(fontsize = 5))
+
+pred_tree_C_class <- predict(tree.pruned_cv_C, newdata = TestC, type = "class")
+table(Prédit = pred_tree_C_class, Réel = TestC$Heart_Disease_Risk)
+# Encore plus de faux négatifs
+
+pred_tree_C_prob <- predict(tree.pruned_cv_C, newdata = TestC, type = "prob")[, 2]
+pred_rocr_tree_C <- prediction(pred_tree_C_prob, TestC$Heart_Disease_Risk)
+perfTree_C       <- performance(pred_rocr_tree_C, "tpr", "fpr")
+```
+
+```{r cart-importance-classif}
+importance_C <- tree.pruned_cv_C$variable.importance
+if (!is.null(importance_C)) {
+  imp_df_C <- data.frame(Variable = names(importance_C),
+                          Importance = as.numeric(importance_C)) %>%
+    arrange(desc(Importance))
+
+  ggplot(imp_df_C, aes(x = reorder(Variable, Importance), y = Importance)) +
+    geom_col(fill = "steelblue") + coord_flip() +
+    labs(title = "Importance des variables — CART (classification)",
+         x = "Variable", y = "Importance") + theme_minimal()
+}
+```
+
+### 3.5 Random Forest (classification)
+
+```{r rf-classif}
+rf.mod_C <- randomForest(Heart_Disease_Risk ~ ., data = TrainC,
+                          ntree = 500, importance = TRUE)
+
+cat("mtry utilisé :", rf.mod_C$mtry, "\n")
+plot(rf.mod_C, main = "Convergence de l'erreur OOB")
+
+importance_rf_C <- as.data.frame(importance(rf.mod_C))
+importance_rf_C$Variable <- rownames(importance_rf_C)
+
+ggplot(importance_rf_C, aes(x = reorder(Variable, MeanDecreaseAccuracy),
+                              y = MeanDecreaseAccuracy)) +
+  geom_col(fill = "darkgreen") + coord_flip() +
+  labs(title = "Importance des variables (Random Forest — classification)",
+       x = "Variable", y = "MeanDecreaseAccuracy") + theme_minimal()
+
+pred.rf_C <- predict(rf.mod_C, newdata = TestC)
+confusionMatrix(pred.rf_C, TestC$Heart_Disease_Risk)
+
+pred.rf_C_prob  <- predict(rf.mod_C, newdata = TestC, type = "prob")[, 2]
+pred_rocr_rf_C  <- prediction(pred.rf_C_prob, TestC$Heart_Disease_Risk)
+perfRF_C        <- performance(pred_rocr_rf_C, "tpr", "fpr")
+# Le poids remonte un peu aussi, mais les mêmes variables dominent
+```
+
+### 3.6 SVM (classification)
+
+#### Noyau RBF
+
+```{r svm-rbf}
+cl <- makePSOCKcluster(detectCores() - 1)
+registerDoParallel(cl)
+
+ctrl_svm <- trainControl(method = "cv", number = 5,
+                          allowParallel = TRUE, classProbs = TRUE)
+grid_svm <- expand.grid(sigma = c(0.01, 0.02, 0.05),
+                         C     = c(0.01, 0.1, 0.5, 1, 1.5))
+
+svm.caret <- train(Heart_Disease_Risk ~ ., data = TrainC,
+                   method = "svmRadial", trControl = ctrl_svm,
+                   tuneGrid = grid_svm, preProcess = c("center", "scale"))
+
+stopCluster(cl); registerDoSEQ()
+
+plot(svm.caret)
+pred.svm       <- predict(svm.caret, newdata = TestC)
+confusionMatrix(pred.svm, TestC$Heart_Disease_Risk)
+
+probs_svm      <- predict(svm.caret, newdata = TestC, type = "prob")
+pred_rocr_svm  <- prediction(probs_svm[, "X1"], TestC$Heart_Disease_Risk)
+perfSVM        <- performance(pred_rocr_svm, "tpr", "fpr")
+```
+
+#### Noyau Linéaire
+
+```{r svm-lineaire}
+cl <- makePSOCKcluster(detectCores() - 1)
+registerDoParallel(cl)
+
+ctrl_lin  <- trainControl(method = "cv", number = 5,
+                           allowParallel = TRUE, classProbs = TRUE)
+grid_lin  <- expand.grid(C = c(0.01, 0.1, 1, 5, 10))
+
+svm.linear <- train(Heart_Disease_Risk ~ ., data = TrainC,
+                    method = "svmLinear", trControl = ctrl_lin,
+                    tuneGrid = grid_lin, preProcess = c("center", "scale"))
+
+stopCluster(cl); registerDoSEQ()
+
+print(svm.linear); plot(svm.linear)
+
+probs_lin      <- predict(svm.linear, newdata = TestC, type = "prob")
+pred_rocr_svm_L <- prediction(probs_lin[, "X1"], TestC$Heart_Disease_Risk)
+perf_svm_L     <- performance(pred_rocr_svm_L, "tpr", "fpr")
+```
+
+## 4. Comparaison des modèles — Courbes ROC
+
+```{r courbes-roc}
+get_auc <- function(p) round(as.numeric(performance(p, "auc")@y.values), 3)
+
+auc_vals <- c(
+  Logit   = get_auc(pred_rocr_logit),
+  BIC     = get_auc(pred_rocr_bic),
+  Lasso   = get_auc(pred_rocr_lasso),
+  CART    = get_auc(pred_rocr_tree),
+  CART_CV = get_auc(pred_rocr_tree_C),
+  RF      = get_auc(pred_rocr_rf_C),
+  SVM_RBF = get_auc(pred_rocr_svm),
+  SVM_Lin = get_auc(pred_rocr_svm_L)
+)
+
+colors <- c("blue","orange","green3","purple","red","brown","cyan","darkgrey")
+
+plot(perflogit, col = colors[1], lwd = 1.5,
+     main = "Comparaison des modèles (ROC — Classification)",
+     xlab = "Taux de Faux Positifs", ylab = "Taux de Vrais Positifs")
+abline(a = 0, b = 1, col = "lightgrey", lty = 3)
+plot(perfBIC,     col = colors[2], lwd = 1.5, add = TRUE)
+plot(perfLasso,   col = colors[3], lwd = 1.5, add = TRUE)
+plot(perfTree,    col = colors[4], lwd = 1.5, add = TRUE)
+plot(perfTree_C,  col = colors[5], lwd = 1.5, add = TRUE)
+plot(perfRF_C,    col = colors[6], lwd = 2,   add = TRUE)
+plot(perfSVM,     col = colors[7], lwd = 2,   add = TRUE)
+plot(perf_svm_L,  col = colors[8], lwd = 2,   add = TRUE)
+
+legend("bottomright", bty = "n", cex = 0.7,
+       col = colors, lwd = c(1.5,1.5,1.5,1.5,1.5,2,2,2),
+       legend = paste(names(auc_vals), "— AUC:", auc_vals))
+# Sans SVM : les arbres sont les moins bons, le reste est équivalent
+```
+
+------------------------------------------------------------------------
+
+# PARTIE 2 — Régression : Prédiction du Cholestérol LDL
+
+> **Objectif :** prédire `Cholesterol_LDL` (variable continue) → **problème de régression**. Métriques : **RMSE**, **MAE**, **R²**.
+
+```{r data-regression}
+# On repart du dataset brut en excluant Heart_Disease_Risk
+data_reg <- data_raw[, !colnames(data_raw) %in% "Heart_Disease_Risk"]
+
+quanti_cols_expl <- c("Age", "LogHeight_cm", "LogWeight_kg", "LogBMI",
+                      "Systolic_BP", "Diastolic_BP",
+                      "Cholesterol_Total", "Cholesterol_HDL",
+                      "Fasting_Blood_Sugar")
+cible <- "Cholesterol_LDL"
+```
+
+## 5. Analyse Exploratoire — Régression
+
+### 5.1 Distribution de la variable cible
+
+```{r distribution-ldl}
+ggplot(data_reg, aes(x = Cholesterol_LDL)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 30,
+                 fill = "steelblue", color = "white", alpha = 0.8) +
+  geom_density(color = "darkblue", linewidth = 1) +
+  labs(title = "Distribution de Cholesterol_LDL",
+       x = "Cholesterol_LDL (mg/dL)", y = "Densité") + theme_minimal()
+
+summary(data_reg$Cholesterol_LDL)
+
+qqnorm(data_reg$Cholesterol_LDL, main = "QQ-plot — Cholesterol_LDL")
+qqline(data_reg$Cholesterol_LDL, col = "red")
+# Pas mal le QQ-plot
+```
+
+### 5.2 Analyse bidimensionnelle
+
+Évidemment lié au cholestérol total. Légère corrélation visuelle avec l'âge.
+
+```{r scatterplots-ldl}
+data_long_q <- data_reg %>%
+  select(all_of(c(cible, quanti_cols_expl))) %>%
+  pivot_longer(cols = all_of(quanti_cols_expl),
+               names_to = "Variable", values_to = "Valeur")
+
+ggplot(data_long_q, aes(x = Valeur, y = Cholesterol_LDL)) +
+  geom_point(alpha = 0.3, color = "steelblue", size = 0.8) +
+  geom_smooth(method = "lm", color = "red", se = TRUE) +
+  facet_wrap(~ Variable, scales = "free_x", ncol = 3) +
+  labs(title = "Cholesterol_LDL vs variables quantitatives",
+       x = "Valeur", y = "Cholesterol_LDL") + theme_minimal()
+```
+
+Les variables qualitatives ne semblent pas corrélées avec le LDL.
+
+```{r boxplots-ldl-quali}
+for (col in quali_cols_base) {
+  p <- ggplot(data_reg, aes(x = .data[[col]], y = Cholesterol_LDL,
+                             fill = .data[[col]])) +
+    geom_boxplot(alpha = 0.7, show.legend = FALSE) +
+    labs(title = paste("Cholesterol_LDL selon", col),
+         x = col, y = "Cholesterol_LDL (mg/dL)") + theme_minimal()
+  print(p)
+}
+```
+
+```{r correlations-ldl}
+vars_num_reg <- names(data_reg)[sapply(data_reg, is.numeric)]
+cor_mat <- cor(data_reg[, vars_num_reg], use = "complete.obs")
+corrplot(cor_mat, method = "ellipse", tl.cex = 0.8,
+         title = "Matrice de corrélations", mar = c(0, 0, 1, 0))
+
+cor_cible <- sort(cor_mat[cible, ], decreasing = TRUE)
+cat("\nCorrélations avec Cholesterol_LDL :\n")
+print(round(cor_cible, 3))
+```
+
+```{r ggpairs-ldl}
+ggpairs(
+  data_reg[, c(cible, "Age", "Cholesterol_Total", "Cholesterol_HDL",
+               "Systolic_BP", "Diastolic_BP", "Fasting_Blood_Sugar",
+               "LogWeight_kg", "LogBMI", "LogHeight_cm")],
+  mapping = aes(alpha = 0.2, color = data_reg$Gender),
+  upper   = list(continuous = wrap("cor", size = 2.5)),
+  lower   = list(continuous = wrap("points", size = 0.3))
+) + theme_minimal()
+```
+
+### 5.3 ACP
+
+```{r acp-ldl}
+quanti_all_reg <- c(quanti_cols_expl, cible)
+n_expl         <- length(quanti_cols_expl)
+
+acp_reg <- PCA(data_reg[, c(quanti_all_reg, quali_cols_base)],
+               scale.unit = TRUE, graph = FALSE,
+               quanti.sup = n_expl + 1,
+               quali.sup  = (n_expl + 2):(n_expl + 1 + length(quali_cols_base)),
+               ncp = 7)
+
+g1 <- fviz_eig(acp_reg, addlabels = TRUE, ylim = c(0, 50))
+g2 <- ggplot(melt(acp_reg$ind$coord), aes(x = Var2, y = value)) +
+        geom_boxplot() + xlab("")
+grid.arrange(g1, g2, ncol = 2)
+
+corrplot(acp_reg$var$cor, is.corr = FALSE, method = "ellipse",
+         title = "Corrélations variables / composantes", mar = c(0, 0, 1, 0))
+
+fviz_pca_var(acp_reg, axes = c(1, 2), repel = TRUE,
+             col.var = "black", col.quanti.sup = "red")
+fviz_pca_ind(acp_reg, col.ind = data_reg$Cholesterol_LDL, label = "none",
+             gradient.cols = c("#2166AC", "#F7F7F7", "#D6604D"),
+             repel = TRUE, legend.title = "LDL") +
+  labs(title = "Individus colorés par Cholesterol_LDL (axes 1-2)")
+```
+
+## 6. Modélisation — Régression
+
+### 6.1 Partition et prétraitement
+
+```{r partition-reg}
+set.seed(42)
+
+trainIndex_R <- createDataPartition(data_reg[[cible]], times = 1, p = 0.8, list = FALSE)
+trainData_R  <- data_reg[ trainIndex_R, ]
+testData_R   <- data_reg[-trainIndex_R, ]
+
+params_R  <- preProcess(trainData_R, method = c("center", "scale"))
+TrainR    <- predict(params_R, trainData_R)[, -1]
+TestR     <- predict(params_R, testData_R)[, -1]
+y.test_R  <- TestR$Cholesterol_LDL
+
+cat("Train:", nrow(TrainR), "| Test:", nrow(TestR), "\n")
+summary(TrainR[, c(cible, quanti_cols_expl)])
+```
+
+```{r fonctions-metriques-reg}
+metriques_reg <- function(obs, pred, modele = "", lm_model = NULL) {
+  rmse <- sqrt(mean((obs - pred)^2))
+  mae  <- mean(abs(obs - pred))
+  if (!is.null(lm_model)) {
+    s      <- summary(lm_model)
+    r2     <- s$r.squared
+    r2_adj <- s$adj.r.squared
+    mse    <- s$sigma^2
+  } else {
+    n      <- length(obs)
+    r2     <- 1 - sum((obs - pred)^2) / sum((obs - mean(obs))^2)
+    r2_adj <- 1 - ((1 - r2) * (n - 1) / (n - 2))
+    mse    <- mean((obs - pred)^2)
+  }
+  cat(sprintf("%-28s RMSE: %.4f | MAE: %.4f | R²: %.4f | R² Adj: %.4f\n",
+              modele, rmse, mae, r2, r2_adj))
+  invisible(c(RMSE = rmse, MAE = mae, MSE = mse, R2 = r2, R2_Adj = r2_adj))
+}
+
+gplot.res <- function(obs, pred, titre = "") {
+  ggplot(data.frame(pred = pred, res = obs - pred), aes(x = pred, y = res)) +
+    geom_point(color = "steelblue", alpha = 0.5) +
+    geom_hline(yintercept = 0, color = "red") +
+    labs(title = titre, x = "Valeurs prédites", y = "Résidus") + theme_minimal()
+}
+```
+
+### 6.2 Régression linéaire
+
+#### Modèle complet
+
+```{r lm-complet}
+lm.full <- lm(Cholesterol_LDL ~ ., data = TrainR)
+summary(lm.full)
+
+par(mfrow = c(2, 2)); plot(lm.full); par(mfrow = c(1, 1))
+
+pred.lm <- predict(lm.full, newdata = TestR)
+res.lm  <- metriques_reg(TestR$Cholesterol_LDL, pred.lm, "LM complet")
+print(gplot.res(TestR$Cholesterol_LDL, pred.lm, "Résidus — LM complet"))
+```
+
+#### Sélection BIC
+
+Il ne reste plus que le cholestérol total.
+
+```{r lm-bic}
+n_R   <- nrow(TrainR)
+lm.bic <- step(lm.full, direction = "backward", k = log(n_R), trace = 0)
+summary(lm.bic)
+
+pred.lm.bic <- predict(lm.bic, newdata = TestR)
+res.lm.bic  <- metriques_reg(TestR$Cholesterol_LDL, pred.lm.bic, "LM + BIC")
+print(gplot.res(TestR$Cholesterol_LDL, pred.lm.bic, "Résidus — LM + BIC"))
+# Résultat très proche du modèle complet
+```
+
+#### Modèle quadratique
+
+```{r lm-quad}
+lm.quad <- lm(Cholesterol_LDL ~ . + I(Cholesterol_Total^2) + I(Age^2) +
+                I(Systolic_BP^2) + I(Diastolic_BP^2) + I(Fasting_Blood_Sugar^2),
+              data = TrainR)
+summary(lm.quad)
+
+pred.quad <- predict(lm.quad, newdata = TestR)
+res.quad  <- metriques_reg(y.test_R, pred.quad, "LM quadratique")
+print(gplot.res(y.test_R, pred.quad, "Résidus — LM quadratique"))
+```
+
+#### Interactions + BIC
+
+```{r lm-inter-bic}
+lm.inter <- lm(Cholesterol_LDL ~ (Cholesterol_Total + Age +
+                                    Systolic_BP + Cholesterol_HDL)^2,
+               data = TrainR)
+lm.inter.bic <- step(lm.inter, direction = "backward", k = log(n_R), trace = 0)
+summary(lm.inter.bic)
+
+pred.inter.bic <- predict(lm.inter.bic, newdata = TestR)
+res.inter.bic  <- metriques_reg(y.test_R, pred.inter.bic, "LM Inter + BIC")
+print(gplot.res(y.test_R, pred.inter.bic, "Résidus — LM Inter + BIC"))
+```
+
+### 6.3 Ridge et Lasso
+
+```{r ridge-lasso-prep}
+x.train_R <- model.matrix(Cholesterol_LDL ~ . - 1, data = TrainR)
+y.train_R <- TrainR$Cholesterol_LDL
+x.test_R  <- model.matrix(Cholesterol_LDL ~ . - 1, data = TestR)
+```
+
+#### Lasso
+
+```{r lasso-reg}
+reg.lasso_R    <- glmnet(y = y.train_R, x = x.train_R, family = "gaussian")
+reg.lasso_R.cv <- cv.glmnet(y = y.train_R, x = x.train_R,
+                              family = "gaussian", nfolds = 10)
+
+cat("lambda.min :", reg.lasso_R.cv$lambda.min, "\n")
+cat("lambda.1se :", reg.lasso_R.cv$lambda.1se, "\n")
+
+plot(reg.lasso_R, xvar = "lambda", label = TRUE)
+plot(reg.lasso_R.cv)
+
+cat("=== Coefficients lambda.1se ===\n")
+print(coef(reg.lasso_R.cv, s = "lambda.1se"))
+
+pred.lasso.min <- as.vector(predict(reg.lasso_R.cv, newx = x.test_R, s = "lambda.min"))
+pred.lasso.1se <- as.vector(predict(reg.lasso_R.cv, newx = x.test_R, s = "lambda.1se"))
+
+res.lasso.min <- metriques_reg(y.test_R, pred.lasso.min, "Lasso lambda.min")
+res.lasso.1se <- metriques_reg(y.test_R, pred.lasso.1se, "Lasso lambda.1se")
+# Différence minime — on préfère lambda.1se pour la parcimonie
+```
+
+#### Ridge
+
+```{r ridge-reg}
+ridge.cv <- cv.glmnet(x = x.train_R, y = y.train_R,
+                       alpha = 0, family = "gaussian", nfolds = 10)
+plot(ridge.cv)
+
+pred.ridge.min <- as.vector(predict(ridge.cv, newx = x.test_R, s = "lambda.min"))
+pred.ridge.1se <- as.vector(predict(ridge.cv, newx = x.test_R, s = "lambda.1se"))
+
+res.ridge.min <- metriques_reg(y.test_R, pred.ridge.min, "Ridge lambda.min")
+res.ridge.1se <- metriques_reg(y.test_R, pred.ridge.1se, "Ridge lambda.1se")
+print(gplot.res(y.test_R, pred.ridge.min, "Résidus — Ridge lambda.min"))
+# Même conclusion que Lasso
+```
+
+### 6.4 Arbre CART (régression)
+
+#### Élagage par Xerror
+
+```{r cart-reg-xerror}
+tree.reg_R <- rpart(Cholesterol_LDL ~ ., data = TrainR,
+                    method = "anova", control = rpart.control(cp = 0.0001))
+printcp(tree.reg_R); plotcp(tree.reg_R)
+
+best_cp_R   <- tree.reg_R$cptable[which.min(tree.reg_R$cptable[, "xerror"]), "CP"]
+tree.pruned_R <- prune(tree.reg_R, cp = best_cp_R)
+rpart.plot(tree.pruned_R, main = "CART élagué (xerror)", cex = 0.6)
+
+pred.cart_R <- predict(tree.pruned_R, newdata = TestR)
+res.cart_R  <- metriques_reg(y.test_R, pred.cart_R, "CART (xerror)")
+print(gplot.res(y.test_R, pred.cart_R, "Résidus — CART (xerror)"))
+```
+
+#### Optimisation par CV (caret)
+
+```{r cart-reg-caret}
+set.seed(42)
+tree.cv_R <- train(Cholesterol_LDL ~ ., data = TrainR,
+                   method = "rpart", metric = "RMSE",
+                   trControl = trainControl(method = "cv", number = 10),
+                   tuneGrid  = expand.grid(cp = seq(0.0001, 0.05, by = 0.001)))
+
+plot(tree.cv_R, main = "Sélection du cp (RMSE en CV)")
+best_cp_cv_R  <- tree.cv_R$bestTune$cp
+cat("cp optimal (CV) :", best_cp_cv_R, "\n")
+
+tree.pruned_cv_R <- prune(tree.reg_R, cp = best_cp_cv_R)
+rpart.plot(tree.pruned_cv_R, main = "CART élagué (CV)", cex = 0.6)
+
+pred.cart.cv_R <- predict(tree.pruned_cv_R, newdata = TestR)
+res.cart.cv_R  <- metriques_reg(y.test_R, pred.cart.cv_R, "CART (CV caret)")
+print(gplot.res(y.test_R, pred.cart.cv_R, "Résidus — CART (CV)"))
+# cp plus élevé = on coupe plus, résultats quand même bons donc autant couper
+```
+
+```{r cart-importance-reg}
+imp_vals_R <- tree.pruned_cv_R$variable.importance
+if (!is.null(imp_vals_R)) {
+  imp_df_R <- data.frame(Variable = names(imp_vals_R),
+                          Importance = as.numeric(imp_vals_R)) %>%
+    arrange(desc(Importance))
+  ggplot(imp_df_R, aes(x = reorder(Variable, Importance), y = Importance)) +
+    geom_col(fill = "steelblue") + coord_flip() +
+    labs(title = "Importance des variables — CART (régression)",
+         x = "Variable", y = "Importance") + theme_minimal()
+}
+# Confirme : cholestérol total prépondérant, puis âge dans une moindre mesure
+```
+
+### 6.5 Random Forest (régression)
+
+```{r rf-reg}
+rf.mod_R <- randomForest(Cholesterol_LDL ~ ., data = TrainR,
+                          ntree = 500, importance = TRUE)
+
+cat("mtry utilisé :", rf.mod_R$mtry, "\n")
+plot(rf.mod_R, main = "Convergence de l'erreur (nombre d'arbres)")
+
+importance_rf_R <- as.data.frame(importance(rf.mod_R))
+importance_rf_R$Variable <- rownames(importance_rf_R)
+
+ggplot(importance_rf_R, aes(x = reorder(Variable, `%IncMSE`), y = `%IncMSE`)) +
+  geom_col(fill = "darkgreen") + coord_flip() +
+  labs(title = "Importance des variables (Random Forest — régression)",
+       x = "Variable", y = "% augmentation MSE") + theme_minimal()
+# Le poids remonte un peu, mais le cholestérol total reste dominant
+
+pred.rf_R <- predict(rf.mod_R, newdata = TestR)
+res.rf_R  <- metriques_reg(y.test_R, pred.rf_R, "Random Forest")
+print(gplot.res(y.test_R, pred.rf_R, "Résidus — Random Forest"))
+```
+
+### 6.6 SVR (Support Vector Regression)
+
+#### Noyau RBF
+
+```{r svr-rbf}
+cl <- makePSOCKcluster(detectCores() - 1)
+registerDoParallel(cl)
+
+svr.caret <- train(
+  Cholesterol_LDL ~ ., data = TrainR, method = "svmRadial",
+  trControl  = trainControl(method = "cv", number = 5, allowParallel = TRUE),
+  tuneGrid   = expand.grid(sigma   = c(0.01, 0.05, 0.1, 0.2),
+                            C       = c(0.5, 1, 2, 5),
+                            epsilon = c(0.05, 0.1, 0.2)),
+  preProcess = c("center", "scale")
+)
+
+stopCluster(cl); registerDoSEQ()
+plot(svr.caret)
+
+pred.svr_R <- predict(svr.caret, newdata = TestR)
+res.svr_R  <- metriques_reg(TestR$Cholesterol_LDL, pred.svr_R, "SVR (RBF)")
+print(gplot.res(TestR$Cholesterol_LDL, pred.svr_R, "Résidus — SVR RBF"))
+```
+
+#### Noyau Linéaire
+
+```{r svr-lineaire}
+cl <- makePSOCKcluster(detectCores() - 1)
+registerDoParallel(cl)
+
+svr.lin <- train(
+  Cholesterol_LDL ~ ., data = TrainR, method = "svmLinear",
+  trControl  = trainControl(method = "cv", number = 5, allowParallel = TRUE),
+  tuneGrid   = expand.grid(C = c(0.01, 0.1, 1, 5, 10)),
+  preProcess = c("center", "scale")
+)
+
+stopCluster(cl); registerDoSEQ()
+print(svr.lin)
+
+pred.svr.lin_R <- predict(svr.lin, newdata = TestR)
+res.svr.lin_R  <- metriques_reg(TestR$Cholesterol_LDL, pred.svr.lin_R, "SVR (Linéaire)")
+print(gplot.res(TestR$Cholesterol_LDL, pred.svr.lin_R, "Résidus — SVR Linéaire"))
+```
+
+## 7. Comparaison des modèles — Régression
+
+```{r comparaison-reg}
+resultats_reg <- data.frame(
+  Modèle = c("LM complet", "LM + BIC", "LM quadratique", "LM Inter + BIC",
+              "Ridge", "Lasso", "CART (xerror)", "CART (CV)",
+              "Random Forest", "SVR (RBF)", "SVR (Linéaire)"),
+  RMSE = c(res.lm["RMSE"],        res.lm.bic["RMSE"],    res.quad["RMSE"],
+            res.inter.bic["RMSE"], res.ridge.1se["RMSE"], res.lasso.1se["RMSE"],
+            res.cart_R["RMSE"],    res.cart.cv_R["RMSE"], res.rf_R["RMSE"],
+            res.svr_R["RMSE"],     res.svr.lin_R["RMSE"]),
+  MAE  = c(res.lm["MAE"],         res.lm.bic["MAE"],     res.quad["MAE"],
+            res.inter.bic["MAE"],  res.ridge.1se["MAE"],  res.lasso.1se["MAE"],
+            res.cart_R["MAE"],     res.cart.cv_R["MAE"],  res.rf_R["MAE"],
+            res.svr_R["MAE"],      res.svr.lin_R["MAE"]),
+  R2   = c(res.lm["R2"],          res.lm.bic["R2"],      res.quad["R2"],
+            res.inter.bic["R2"],   res.ridge.1se["R2"],   res.lasso.1se["R2"],
+            res.cart_R["R2"],      res.cart.cv_R["R2"],   res.rf_R["R2"],
+            res.svr_R["R2"],       res.svr.lin_R["R2"])
+) %>% arrange(RMSE)
+
+print(resultats_reg)
+```
+
+```{r graphique-comparaison-reg}
+resultats_long_reg <- resultats_reg %>%
+  pivot_longer(cols = c("RMSE", "MAE"), names_to = "Métrique", values_to = "Valeur")
+
+ggplot(resultats_long_reg, aes(x = reorder(Modèle, Valeur), y = Valeur, fill = Métrique)) +
+  geom_col(position = "dodge", alpha = 0.85) + coord_flip() +
+  scale_fill_manual(values = c("RMSE" = "steelblue", "MAE" = "tomato")) +
+  labs(title = "Comparaison des modèles — RMSE et MAE (test)", x = NULL, y = "Erreur") +
+  theme_minimal()
+
+ggplot(resultats_reg, aes(x = reorder(Modèle, R2), y = R2)) +
+  geom_col(fill = "seagreen", alpha = 0.85) + coord_flip() +
+  labs(title = "Comparaison des modèles — R² (test)", x = NULL, y = "R²") +
+  theme_minimal()
+```
+
+```{r predictions-vs-obs}
+preds_list_R <- list(
+  "LM complet" = pred.lm,
+  "BIC"        = pred.lm.bic,
+  "Lasso"      = pred.lasso.1se,
+  "CART (CV)"  = pred.cart.cv_R,
+  "RF"         = pred.rf_R,
+  "SVR (RBF)"  = pred.svr_R
+)
+
+plots_pvo <- lapply(names(preds_list_R), function(nm) {
+  p  <- preds_list_R[[nm]]
+  df <- data.frame(obs = y.test_R, pred = p[seq_along(y.test_R)])
+  ggplot(df, aes(x = obs, y = pred)) +
+    geom_point(alpha = 0.4, color = "steelblue", size = 0.9) +
+    geom_abline(slope = 1, intercept = 0, color = "red") +
+    labs(title = nm, x = "Observé", y = "Prédit") + theme_minimal()
+})
+
+do.call(grid.arrange, c(plots_pvo, ncol = 2))
+```
