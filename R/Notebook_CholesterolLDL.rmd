@@ -653,46 +653,114 @@ res.rf  <- metriques_reg(y.test, pred.rf, "Random Forest")
 # Graphique des résidus
 print(gplot.res(y.test, pred.rf, "Résidus — Random Forest"))
 ```
-Le poids est un peu plus important
-------------------------------------------------------------------------
+
+## Le poids est un peu plus important
 
 ## 3.7 SVR (Support Vector Regression)
 
 ```{r svr-initial}
 # Noyau RBF (radial) : choix justifié par la possible non-linéarité des relations
 # Hyperparamètres : cost (C) et gamma
-svr.tune <- tune.svm(
-  Cholesterol_LDL ~ .,
-  data   = TrainCenter,
-  type   = "eps-regression",
-  kernel = "radial",
-  cost   = c(0.5, 1, 2, 5),
-  gamma  = c(0.01, 0.05, 0.1, 0.2),
+library(caret)
+library(doParallel)
+
+# --- 1. Activation du calcul parallèle ---
+cl <- makePSOCKcluster(detectCores() - 1)
+registerDoParallel(cl)
+
+# --- 2. Configuration du contrôle ---
+# On utilise la méthode "cv" (cross-validation)
+ctrl_svr <- trainControl(
+  method = "cv", 
+  number = 5,      # 5-fold pour gagner du temps
+  allowParallel = TRUE
+)
+
+# --- 3. Définition de la grille (C, sigma, epsilon) ---
+# Note : caret utilise 'sigma' pour gamma et 'epsilon' reste 'epsilon'
+grid_svr <- expand.grid(
+  sigma   = c(0.01, 0.05, 0.1, 0.2),
+  C       = c(0.5, 1, 2, 5),
   epsilon = c(0.05, 0.1, 0.2)
 )
 
-plot(svr.tune)
-summary(svr.tune)
-```
-
-```{r svr-optimal}
-svr.best <- svm(
-  Cholesterol_LDL ~ .,
-  data    = TrainCenter,
-  type    = "eps-regression",
-  kernel  = "radial",
-  cost    = svr.tune$best.parameters$cost,
-  gamma   = svr.tune$best.parameters$gamma,
-  epsilon = svr.tune$best.parameters$epsilon
+# --- 4. Entraînement de la SVR ---
+svr.caret <- train(
+  Cholesterol_LDL ~ ., 
+  data       = TrainCenter,
+  method     = "svmRadial", # svmRadial gère aussi la régression automatiquement
+  trControl  = ctrl_svr,
+  tuneGrid   = grid_svr,
+  preProcess = c("center", "scale") # Crucial pour la SVR
 )
 
-summary(svr.best)
+# --- 5. Arrêt du parallèle ---
+stopCluster(cl)
+registerDoSEQ()
+
+# --- 6. Résultats ---
+# Détails techniques du modèle champion
+print(svr.caret$finalModel)
+plot(svr.caret) # Affiche l'évolution de l'erreur selon les paramètres
+
+# Détails techniques du modèle champion
+print(svr.caret$finalModel)
+```
+
+```{}
 ```
 
 ```{r svr-predictions}
-pred.svr <- predict(svr.best, newdata = TestCenter)
-res.svr  <- metriques_reg(y.test, pred.svr, "SVR (noyau RBF)")
-print(gplot.res(y.test, pred.svr, "Résidus — SVR"))
+pred.svr <- predict(svr.caret, newdata = TestCenter)
+
+res.svr <- metriques_reg(TestCenter$Cholesterol_LDL, pred.svr, "SVR (noyau RBF)")
+
+print(res.svr)
+```
+
+Modele lineaire
+
+```{r}
+
+
+# --- 1. Activation du calcul parallèle ---
+cl <- makePSOCKcluster(detectCores() - 1)
+registerDoParallel(cl)
+
+# --- 2. Configuration du contrôle ---
+ctrl_svr_lin <- trainControl(method = "cv", number = 5, allowParallel = TRUE)
+
+# --- 3. Définition de la grille (Uniquement C pour le linéaire) ---
+# On teste des valeurs pour trouver l'équilibre entre erreur et complexité
+grid_svr_lin <- expand.grid(C = c(0.01, 0.1, 1, 5, 10))
+
+# --- 4. Entraînement avec method = "svmLinear" ---
+svr.lin.caret <- train(
+  Cholesterol_LDL ~ ., 
+  data       = TrainCenter,
+  method     = "svmLinear", 
+  trControl  = ctrl_svr_lin,
+  tuneGrid   = grid_svr_lin,
+  preProcess = c("center", "scale")
+)
+
+# --- 5. Nettoyage ---
+stopCluster(cl)
+registerDoSEQ()
+
+print(svr.lin.caret)
+```
+
+```{r}
+# 1. Prédictions sur le test
+pred.svr.lin <- predict(svr.lin.caret, newdata = TestCenter)
+
+# 2. Métriques de performance
+res.svr.lin <- metriques_reg(TestCenter$Cholesterol_LDL, pred.svr.lin, "SVR (noyau Linéaire)")
+print(res.svr.lin)
+
+# 3. Graphique des résidus
+print(gplot.res(TestCenter$Cholesterol_LDL, pred.svr.lin, "Résidus — SVR Linéaire"))
 ```
 
 ------------------------------------------------------------------------
@@ -784,9 +852,4 @@ do.call(grid.arrange, c(plots_pvo, ncol = 2)) # ncol=2 pour mieux voir
 
 ------------------------------------------------------------------------
 
-```         
-/r
-```
-
-> ```         
-> ```
+>

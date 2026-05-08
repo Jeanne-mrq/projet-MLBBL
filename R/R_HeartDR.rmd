@@ -522,8 +522,8 @@ cat("F1-Score             :", round(conf_matrix$byClass["F1"], 4), "\n")
 
 
 ```
-Le poids remonte un peu aussi. Mais ça reste les même variable
-------------------------------------------------------------------------
+
+## Le poids remonte un peu aussi. Mais ça reste les même variable
 
 ## 3.7 SVM (Support Vector Machine)
 
@@ -543,15 +543,108 @@ plot(svm.reg.tune)
 summary(svm.reg.tune)
 ```
 
-```{r svm-optimal}
-svm.best <- svm(
-  Heart_Disease_Risk ~ .,
-  data  = TrainCenter,
-  cost  = svm.reg.tune$best.parameters$cost,
-  gamma = svm.reg.tune$best.parameters$gamma
+Test avec Caret car trop lent
+
+```{r}
+
+library(caret)
+library(doParallel)
+
+cl <- makePSOCKcluster(detectCores() - 1)
+registerDoParallel(cl)
+
+ctrl <- trainControl(method = "cv", number = 5, allowParallel = TRUE, classProbs = TRUE) 
+
+grid <- expand.grid(
+  sigma = c(0.01, 0.02, 0.05), 
+  C     = c(0.01, 0.1, 0.5, 1, 1.5) 
 )
 
-summary(svm.best)
+# 3. Lancer l'entraînement
+svm.caret <- train(
+  Heart_Disease_Risk ~ ., 
+  data      = TrainCenter, 
+  method    = "svmRadial", # "svmRadial" correspond au SVM avec noyau RBF
+  trControl = ctrl,
+  tuneGrid  = grid,
+  preProcess = c("center", "scale") # Très recommandé pour le SVM
+)
+
+# Une fois terminé, on arrête les cœurs
+stopCluster(cl)
+```
+
+```{r}
+# Affiche le tableau complet des résultats
+print(svm.caret$results)
+plot(svm.caret)
+summary(svm.caret)
+
+# 1. Faire les prédictions
+predictions_svm <- predict(svm.caret, newdata = TestCenter)
+
+# 2. Créer la matrice de confusion
+confusionMatrix(predictions, TestCenter$Heart_Disease_Risk)
+```
+
+```{r svm-optimal}
+# On prend la deuxième colonne des probabilités
+pred_rocr_svm <- prediction(probs_svm[, 2], labels)
+
+# On calcule la performance
+perfSVM <- performance(pred_rocr_svm, "tpr", "fpr")
+
+# Et on l'ajoute au graphique
+plot(perfSVM, col = "black", lwd = 2, add = TRUE)
+```
+
+Test avec kernel linéraire
+
+```{r}
+
+cl <- makePSOCKcluster(detectCores() - 1)
+registerDoParallel(cl)
+
+ctrl_linear <- trainControl(
+  method = "cv", 
+  number = 5, 
+  allowParallel = TRUE, 
+  classProbs = TRUE  # Indispensable pour la courbe ROC plus tard
+)
+
+# --- 3. Grille de paramètres (Seulement C pour le linéaire) ---
+# On teste des valeurs variées pour voir si le modèle préfère la souplesse (0.1) ou la rigueur (10)
+grid_linear <- expand.grid(C = c(0.01, 0.1, 1, 5, 10))
+
+# --- 4. Entraînement du modèle ---
+svm.linear <- train(
+  Heart_Disease_Risk ~ ., 
+  data       = TrainCenter, 
+  method     = "svmLinear",    # Changement crucial : on passe en linéaire
+  trControl  = ctrl_linear,
+  tuneGrid   = grid_linear,
+  preProcess = c("center", "scale") # Le SVM Linéaire a aussi besoin de normalisation
+)
+
+# --- 5. Nettoyage ---
+stopCluster(cl)
+registerDoSEQ() # Retour au mode de calcul normal
+
+
+
+```
+
+```{r}
+# --- 6. Affichage des résultats ---
+print(svm.linear)
+plot(svm.linear)
+
+
+# 1. Probabilités pour le modèle linéaire
+probs_linear <- predict(svm.linear, newdata = TestCenter, type = "prob")
+
+# 2. Préparation ROCR
+pred_rocr_svm_L <- prediction(probs_linear[, "X1"], TestCenter$Heart_Disease_Risk)
 ```
 
 ------------------------------------------------------------------------
@@ -559,43 +652,56 @@ summary(svm.best)
 # 4. Comparaison des modèles — Courbes ROC
 
 ```{r courbes-roc}
-# performance() attend un objet prediction() construit à partir des probabilités,
-# pas des classes prédites — on encapsule chaque vecteur de probabilités
+# --- 1. Calcul des AUC pour la légende ---
+# On extrait la valeur numérique de l'AUC pour chaque modèle
+get_auc <- function(p) { round(as.numeric(performance(p, "auc")@y.values), 3) }
 
-labels <- TestCenter$Heart_Disease_Risk
+auc_logit  <- get_auc(pred_rocr_logit)
+auc_bic    <- get_auc(pred_rocr_bic)
+auc_lasso  <- get_auc(pred_rocr_lasso)
+auc_tree   <- get_auc(pred_rocr_tree)
+auc_tree_C <- get_auc(pred_rocr_tree_C)
+auc_svm_R  <- get_auc(pred_rocr_svm)   # Ton RBF
+auc_svm_L  <- get_auc(pred_rocr_svm_L) # Ton Linéaire
 
-pred_rocr_logit  <- prediction(pred.log,labels)
-pred_rocr_bic    <- prediction(pred.log.bic,labels)
-pred_rocr_lasso  <- prediction(as.vector(pred.lasso), labels)
-pred_rocr_tree   <- prediction(pred_treePrune_prob, labels)
-pred_rocr_tree_C   <- prediction(pred_treePrune_C_prob, labels)
-
-
-# Pour le SVM, il faut les probabilités (activer probability = TRUE dans svm())
-#pred_rocr_svm    <- prediction(attr(predict(svm.best, newdata = TestCenter, probability = TRUE), "probabilities")[, "1"],labels)
-
-perflogit <- performance(pred_rocr_logit, "tpr", "fpr")
-perfBIC   <- performance(pred_rocr_bic,   "tpr", "fpr")
-perfLasso <- performance(pred_rocr_lasso, "tpr", "fpr")
-perfTree  <- performance(pred_rocr_tree,  "tpr", "fpr")
-perfTree_C  <- performance(pred_rocr_tree_C,  "tpr", "fpr")
-
-#perfSVM   <- performance(pred_rocr_svm,   "tpr", "fpr")
-
+# --- 2. Création du graphique amélioré ---
 par(mfrow = c(1, 1))
-plot(perflogit, col = "blue",   lty = 2, main = "Courbes ROC — Comparaison des modèles")
-plot(perfBIC,   col = "orange", lty = 2, add = TRUE)
-plot(perfLasso, col = "green",  lty = 1, add = TRUE)
-plot(perfTree,  col = "purple", lty = 1, add = TRUE)
-plot(perfTree_C,  col = "red", lty = 1, add = TRUE)
 
-#plot(perfSVM,   col = "red",    lty = 1, add = TRUE)
+# On commence par le Logit pour fixer le cadre
+plot(perflogit, col = "blue", lty = 2, lwd = 1, 
+     main = "Comparaison des Modèles (ROC)", 
+     xlab = "Taux de Faux Positifs (1-Spécificité)",
+     ylab = "Taux de Vrais Positifs (Sensibilité)")
 
+# Ajout de la ligne de chance (diagonale grise)
+abline(a = 0, b = 1, col = "lightgrey", lty = 3)
+
+# Ajout des autres modèles
+plot(perfBIC,    col = "orange", lty = 2, add = TRUE)
+plot(perfLasso,  col = "green3", lty = 1, add = TRUE)
+plot(perfTree,   col = "purple", lty = 1, add = TRUE)
+plot(perfTree_C, col = "red",    lty = 1, add = TRUE)
+
+# On met en valeur les SVM avec des traits plus épais (lwd = 2)
+plot(perfSVM,    col = "cyan",     lwd = 2, add = TRUE)
+plot(perf_svm_L, col = "darkgrey", lwd = 2, add = TRUE)
+
+# --- 3. Légende ultra-précise avec les scores AUC ---
 legend("bottomright",
-       legend = c("Logit complet", "Logit + BIC", "Lasso", "Arbre élagué", "Arbre élagué par CV"),
-       col    = c("blue", "orange", "green", "purple", "red"),
-       lty    = c(2, 2, 1, 1, 1),
-       cex    = 0.8)
+       legend = c(
+         paste("Logit complet - AUC:", auc_logit),
+         paste("Logit + BIC - AUC:", auc_bic),
+         paste("Lasso - AUC:", auc_lasso),
+         paste("Arbre élagué - AUC:", auc_tree),
+         paste("Arbre CV - AUC:", auc_tree_C),
+         paste("SVM RBF - AUC:", auc_svm_R),
+         paste("SVM Linear - AUC:", auc_svm_L)
+       ),
+       col = c("blue", "orange", "green3", "purple", "red", "cyan", "darkgrey"),
+       lty = c(2, 2, 1, 1, 1, 1, 1),
+       lwd = c(1, 1, 1, 1, 1, 2, 2), # Traits épais pour les SVM
+       cex = 0.7,
+       bty = "n") # Supprime le cadre de la légende pour plus de clarté
 ```
 
 SANS SVM: les arbres sont les moins bons, le reste est équivalent.
