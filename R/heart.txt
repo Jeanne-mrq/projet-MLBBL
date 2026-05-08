@@ -1,0 +1,707 @@
+---
+title: "Analyse du Risque de Maladie Cardiaque"
+author: ""
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 4
+    toc_float: true
+    theme: flatly
+    highlight: tango
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+```{r librairies}
+library(readr)
+library(GGally)
+library(e1071)
+library(pROC)
+library(ROCR)
+library(partykit)
+
+```
+
+------------------------------------------------------------------------
+
+# 1. Importation des données
+
+```{r importation}
+path <- "https://raw.githubusercontent.com/Jeanne-mrq/projet-MLBBL/refs/heads/main/healthcare_synthetic_data.csv"
+data <- read.csv(path)
+```
+
+------------------------------------------------------------------------
+
+# 2. Analyse Exploratoire
+
+## 2.1 Structure et encodage des variables
+
+**Vérification de la nature des variables et conversion des variables qualitatives en facteurs.**
+
+```{r structure-initiale}
+print(str(data))
+```
+
+```{r conversion-facteurs}
+data$Gender                  <- as.factor(data$Gender)
+data$Smoking_Status          <- as.factor(data$Smoking_Status)
+data$Family_History          <- as.factor(data$Family_History)
+data$Physical_Activity_Level <- as.factor(data$Physical_Activity_Level)
+data$Alcohol_Consumption     <- as.factor(data$Alcohol_Consumption)
+data$Heart_Disease_Risk      <- as.factor(data$Heart_Disease_Risk)
+data$Sleep_Hours             <- as.factor(data$Sleep_Hours)
+data$Stress_Level            <- as.factor(data$Stress_Level)
+
+print(str(data))
+```
+
+------------------------------------------------------------------------
+
+## 2.2 Analyse unidimensionnelle
+
+**Distribution des variables quantitatives — histogrammes et courbes de densité.**
+
+```{r fonction-plot-quantitatif}
+library(ggplot2)
+library(gridExtra)
+
+plot_quantitative <- function(df) {
+  vars_num <- names(df)[sapply(df, is.numeric)]
+
+  plots <- lapply(vars_num, function(v) {
+    ggplot(df, aes(x = .data[[v]])) +
+      geom_histogram(aes(y = after_stat(density)),
+                     bins = 30,
+                     fill = "grey80",
+                     color = "black") +
+      geom_density(alpha = 0.2, color = "blue") +
+      labs(title = v, x = v, y = "Densité") +
+      theme_minimal()
+  })
+
+  do.call(grid.arrange, c(plots, ncol = 3))
+}
+
+plot_quantitative(data)
+```
+
+**Transformation logarithmique** des variables asymétriques (`Weight_kg`, `BMI`, `Height_cm`) pour améliorer la symétrie des distributions.
+
+```{r transformation-log}
+data[, "LogWeight_kg"] <- log(data[, "Weight_kg"])
+data[, "LogBMI"]       <- log(data[, "BMI"])
+data[, "LogHeight_cm"] <- log(data[, "Height_cm"])
+
+# Suppression des variables originales remplacées
+data <- data[, !colnames(data) %in% c("Weight_kg", "BMI", "Height_cm")]
+
+plot_quantitative(data)
+```
+
+```{r definition-colonnes}
+# Colonnes quantitatives
+quanti_cols <- c("Age", "LogHeight_cm", "LogWeight_kg", "LogBMI",
+                 "Systolic_BP", "Diastolic_BP",
+                 "Cholesterol_Total", "Cholesterol_LDL",
+                 "Cholesterol_HDL", "Fasting_Blood_Sugar")
+
+# Colonnes qualitatives
+quali_cols <- c("Gender", "Smoking_Status", "Alcohol_Consumption",
+                "Physical_Activity_Level", "Family_History",
+                "Stress_Level", "Sleep_Hours", "Heart_Disease_Risk")
+```
+
+------------------------------------------------------------------------
+
+## 2.3 Analyse bidimensionnelle
+
+**Visualisation des liens entre les variables explicatives et la variable cible `Heart_Disease_Risk`.**
+
+Visuellement les variables qualitatives qui semblent influencer sont le statut de fumeur, l'activité sportive, les antécédants familiaux et le stress
+
+```{r boxplots-quanti-vs-cible}
+library(tidyr)
+library(dplyr)
+
+# Variables quantitatives retenues pour cette analyse
+quanti_cols_plot <- c("Age", "Systolic_BP", "Diastolic_BP",
+                      "Cholesterol_Total", "Cholesterol_LDL",
+                      "Cholesterol_HDL", "Fasting_Blood_Sugar")
+
+data_long <- data %>%
+  select(all_of(c("Heart_Disease_Risk", quanti_cols_plot))) %>%
+  pivot_longer(cols = all_of(quanti_cols_plot),
+               names_to  = "Variable",
+               values_to = "Valeur")
+
+ggplot(data_long, aes(x = Variable, y = Valeur, fill = Heart_Disease_Risk)) +
+  geom_boxplot(position = position_dodge(width = 0.8)) +
+  scale_fill_manual(values = c("0" = "lightblue", "1" = "salmon"),
+                    labels = c("Non", "Oui")) +
+  labs(x = "Variable", y = "Valeur", fill = "Risque cardiaque",
+       title = "Distribution des variables quantitatives selon le risque de maladie cardiaque") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r barplots-quali-vs-cible}
+for (col in quali_cols) {
+  p <- ggplot(data, aes_string(x = col, fill = "Heart_Disease_Risk")) +
+    geom_bar(position = "fill") +
+    scale_fill_manual(values = c("0" = "lightblue", "1" = "salmon"),
+                      labels = c("Non", "Oui")) +
+    ylab("Proportion") +
+    labs(fill = "Risque cardiaque",
+         title = paste("Proportion de risque cardiaque par", col)) +
+    theme_minimal()
+  print(p)
+}
+```
+
+```{r ggpairs-et-correlations}
+library(corrplot)
+
+vars_num <- names(data)[sapply(data, is.numeric)]
+
+ggpairs(
+  data[, c(vars_num, "Heart_Disease_Risk")],
+  mapping = aes(alpha = 0.3, color = Heart_Disease_Risk)
+)
+
+corrplot(cor(data[, vars_num]), method = "ellipse")
+```
+
+------------------------------------------------------------------------
+
+## 2.4 Analyse en Composantes Principales (ACP)
+
+**ACP sur les variables quantitatives — visualisation de la structure des données et des liens avec la variable cible.**
+
+```{r acp}
+library(FactoMineR)
+library(factoextra)
+library(reshape2)
+
+acp <- PCA(data[, c(quanti_cols, quali_cols)],
+           scale.unit  = TRUE,
+           graph       = FALSE,
+           quali.sup   = length(quanti_cols) + seq_along(quali_cols),
+           ncp         = 7)
+
+# Décroissance des valeurs propres et distribution des composantes
+g1 <- fviz_eig(acp, addlabels = TRUE, ylim = c(0, 40))
+g2 <- ggplot(melt(acp$ind$coord), aes(x = Var2, y = value)) +
+        geom_boxplot() +
+        xlab("")
+grid.arrange(g1, g2, ncol = 2)
+
+# Corrélation variables / composantes
+corrplot(acp$var$cor, is.corr = FALSE, method = "ellipse")
+```
+
+```{r acp-visualisations}
+# Cercle des corrélations et nuage des individus — axes 1 et 2
+fviz_pca_var(acp, axes = c(1, 2), repel = TRUE)
+fviz_pca_ind(acp, col.ind = "contrib", label = "none",
+             gradient.cols = c("white", "#2E9FDF", "#FC4E07"),
+             repel = TRUE)
+
+# Cercle des corrélations et nuage des individus — axes 1 et 3
+fviz_pca_var(acp, axes = c(1, 3), repel = TRUE)
+fviz_pca_ind(acp, col.ind = "contrib", label = "none",
+             gradient.cols = c("white", "#2E9FDF", "#FC4E07"),
+             axes = c(1, 3), repel = TRUE)
+```
+
+------------------------------------------------------------------------
+
+# 3. Modélisation
+
+## 3.1 Partition apprentissage / test
+
+**Division du jeu de données : 80 % apprentissage, 20 % test.**\
+Cette étape est nécessaire pour évaluer les performances des modèles sur des données indépendantes et éviter le surapprentissage.
+
+```{r partition}
+library(caret)
+
+quanti_cols <- c("Age", "LogHeight_cm", "LogWeight_kg", "LogBMI",
+                 "Systolic_BP", "Diastolic_BP",
+                 "Cholesterol_Total", "Cholesterol_LDL",
+                 "Cholesterol_HDL", "Fasting_Blood_Sugar")
+
+trainIndex <- createDataPartition(data[, 16], times = 1, p = 0.8, list = FALSE)
+
+trainData <- data[ trainIndex, ]
+testData  <- data[-trainIndex, ]
+```
+
+## 3.2 Centrage et réduction
+
+```{r centrage-reduction}
+params <- preProcess(trainData, method = c("center", "scale"))
+
+TrainCenter <- predict(params, trainData)
+TestCenter  <- predict(params, testData)
+
+# Suppression de l'identifiant
+TrainCenter <- TrainCenter[, -1]
+TestCenter  <- TestCenter[, -1]
+
+summary(TrainCenter)
+summary(TestCenter)
+```
+
+```{r fonction-graphique-residus}
+gplot.res <- function(x, y, titre = "") {
+  ggplot(data.frame(x = x, y = y), aes(x, y)) +
+    geom_point(col = "blue") +
+    xlim(0, 250) + ylim(-155, 155) +
+    ylab("Résidus") + xlab("Valeurs prédites") +
+    ggtitle(titre) +
+    geom_hline(yintercept = 0, col = "green")
+}
+```
+
+------------------------------------------------------------------------
+
+## 3.3 Régression logistique
+
+### Modèle complet
+
+```{r logit-complet}
+reg.logit <- glm(Heart_Disease_Risk ~ .,
+                 data   = TrainCenter,
+                 family = "binomial")
+
+summary(reg.logit)
+```
+
+```{r logit-diagnostics}
+par(mfrow = c(2, 2))
+plot(reg.logit)
+```
+
+```{r logit-predictions}
+pred.log       <- predict(reg.logit, newdata = TestCenter, type = "response")
+pred.log.class <- ifelse(pred.log > 0.5, "Yes", "No")
+
+conf_matrix <- table(Prédiction = pred.log.class, Réel = TestCenter$Heart_Disease_Risk)
+print(conf_matrix)
+```
+
+### Sélection de variables par critère BIC
+
+Les variables retenues sont: la pression, l'age, le cholesterol LDL, le sucre dans le sans, le status de fumeur, le stress, l'activité physique, les antécédants familiaux et l'IMC
+
+```{r logit-bic}
+n <- nrow(TrainCenter)
+
+model_bic <- step(reg.logit,
+                  direction = "backward",
+                  k         = log(n),
+                  trace     = 0)
+
+summary(model_bic)
+```
+
+```{r logit-bic-predictions}
+pred.log.bic   <- predict(model_bic, newdata = TestCenter, type = "response")
+pred.BIC.class <- ifelse(pred.log.bic > 0.5, "Yes", "No")
+
+conf_matrix <- table(Prédiction = pred.BIC.class, Réel = TestCenter$Heart_Disease_Risk)
+print(conf_matrix)
+  
+```
+
+## Légérement moins bon en prédiction que le modèle complet
+
+## 3.4 Régression Lasso
+
+```{r lasso-ajustement}
+library(glmnet)
+
+x.mat <- model.matrix(Heart_Disease_Risk ~ . - 1, data = TrainCenter)
+y.vec <- as.numeric(as.character(TrainCenter$Heart_Disease_Risk))
+
+reg.lasso <- glmnet(x = x.mat, y = y.vec, family = "binomial")
+plot(reg.lasso)
+```
+
+```{r lasso-cv}
+library(ggfortify)
+
+reg.lasso.cv <- cv.glmnet(y      = TrainCenter[, 15],
+                           x      = x.mat,
+                           family = "binomial",
+                           nfolds = 10)
+
+autoplot(reg.lasso.cv)
+
+paste("CV estimate of lambda :", round(reg.lasso.cv$lambda.1se, 10))
+coef(reg.lasso.cv, s = "lambda.1se")
+```
+
+```{r lasso-predictions}
+x.test <- model.matrix(Heart_Disease_Risk ~ . - 1, data = TestCenter)
+
+pred.lasso      <- predict(reg.lasso.cv, newx = x.test, s = "lambda.min", type = "response")
+pred.classlasso <- ifelse(pred.lasso > 0.5, "Yes", "No")
+
+conf_matrix <- table(Prédiction = pred.classlasso, Réel = TestCenter$Heart_Disease_Risk)
+print(conf_matrix)
+```
+
+## Meilleur modèle mais que de très peu
+
+## 3.5 Arbre de décision (CART)
+
+### 3.5.1 Arbre Classique et optimisation par Xerror
+
+L'arbre conirmle que le statu de fumeur et l'historique familiale sont les deux variables prépondérantes pour prédire le risque de maladie cardiaque
+
+```{r cart-ajustement}
+library(rpart)
+library(rpart.plot)
+
+tree.reg <- rpart(
+  Heart_Disease_Risk ~ .,
+  data    = TrainCenter,
+  method  = "class",
+  parms   = list(split = "information"),
+  control = rpart.control(cp = 0.0001)
+)
+
+printcp(tree.reg)
+plotcp(tree.reg)
+```
+
+```{r cart-elagage}
+best_cp <- tree.reg$cptable[which.min(tree.reg$cptable[, "xerror"]), "CP"]
+best_cp
+
+tree.pruned <- prune(tree.reg, cp = best_cp)
+
+plot(as.party(tree.pruned), type = "simple",gp = gpar(fontsize = 5))
+print(tree.pruned)
+```
+
+```{r cart-predictions}
+pred_treeprune <- predict(tree.pruned, newdata = TestCenter, type = "class")
+
+conf_mat_test <- table(Prédit = pred_treeprune, Réel = TestCenter$Heart_Disease_Risk)
+print(conf_mat_test)
+
+pred_treePrune_prob <- predict(tree.pruned, newdata = TestCenter, type = "prob")[, 2]
+pred_treePrune      <- prediction(pred_treePrune_prob, TestCenter$Heart_Disease_Risk)
+```
+
+Beucoup plus de faux négatif et moins de faux positif. Dans la cadre de prévention médical c'est pas ouf \### 3.5.2 Optimisation par CV (carret)
+
+```{r, cart-caret}
+cv_control <- trainControl(
+  method          = "cv",
+  number          = 20,
+  classProbs      = TRUE,
+  summaryFunction = twoClassSummary
+)
+levels(TrainCenter$Heart_Disease_Risk) <- make.names(levels(TrainCenter$Heart_Disease_Risk))
+levels(TestCenter$Heart_Disease_Risk)  <- make.names(levels(TestCenter$Heart_Disease_Risk))
+
+tree.cv <- train(
+  Heart_Disease_Risk ~ .,
+  data      = TrainCenter,
+  method    = "rpart",
+  metric    = "ROC",
+  trControl = cv_control,
+  tuneGrid  = expand.grid(cp = seq(0.0001, 0.05, by = 0.001))
+)
+
+# Visualisation de la sélection du cp
+plot(tree.cv, main = "Sélection du cp optimal par validation croisée (AUC)")
+
+best_cp <- tree.cv$bestTune$cp
+cat("cp optimal retenu :", best_cp, "\n")
+
+
+```
+
+```{r, cart-carret-prune}
+
+tree.pruned_carret <- prune(tree.reg, cp = best_cp)
+
+plot(as.party(tree.pruned_carret), type = "simple", gp = gpar(fontsize = 5))
+print(tree.pruned)
+
+```
+
+```{r cart-carret-predictions}
+pred_treeprune_carret <- predict(tree.pruned_carret, newdata = TestCenter, type = "class")
+
+conf_mat_test <- table(Prédit = pred_treeprune_carret, Réel = TestCenter$Heart_Disease_Risk)
+print(conf_mat_test)
+
+pred_treePrune_C_prob <- predict(tree.pruned_carret, newdata = TestCenter, type = "prob")[, 2]
+pred_treePrune_C<- prediction(pred_treePrune_C_prob, TestCenter$Heart_Disease_Risk)
+```
+
+Encore plus de faux négatif.
+
+```{r cart-importance}
+importance <- tree.pruned_carret$variable.importance
+
+if (!is.null(importance)) {
+  imp_df <- data.frame(
+    Variable   = names(importance),
+    Importance = as.numeric(importance)
+  ) %>% arrange(desc(Importance))
+
+  ggplot(imp_df, aes(x = reorder(Variable, Importance), y = Importance)) +
+    geom_col(fill = "steelblue") +
+    coord_flip() +
+    labs(title = "Importance des variables — Arbre CART élagué",
+         x = "Variable", y = "Importance") +
+    theme_minimal()
+}
+```
+
+------------------------------------------------------------------------
+
+## 3.8 Random Forest
+
+```{r}
+library(randomForest)
+
+rf.mod <- randomForest(
+  Heart_Disease_Risk ~ ., 
+  data       = TrainCenter, 
+  ntree      = 500, 
+  importance = TRUE
+)
+
+# Paramètres utilisés
+cat("Valeur de mtry utilisée :", rf.mod$mtry, "\n")
+
+# Courbe de convergence de l'erreur OOB
+plot(rf.mod, main = "Convergence de l'erreur OOB en fonction du nombre d'arbres")
+
+# Importance des variables — pour classification : MeanDecreaseAccuracy
+importance_rf <- as.data.frame(importance(rf.mod))
+importance_rf$Variable <- rownames(importance_rf)
+
+ggplot(importance_rf, aes(x = reorder(Variable, MeanDecreaseAccuracy), y = MeanDecreaseAccuracy)) +
+  geom_col(fill = "darkgreen") +
+  coord_flip() +
+  labs(
+    title    = "Importance des variables (Random Forest)",
+    subtitle = "Basée sur la diminution moyenne de précision (MeanDecreaseAccuracy)",
+    x = "Variable",
+    y = "Diminution moyenne de précision"
+  ) +
+  theme_minimal()
+
+# Prédictions
+pred.rf <- predict(rf.mod, newdata = TestCenter)
+
+# Matrice de confusion
+conf_matrix <- confusionMatrix(pred.rf, y.test)
+print(conf_matrix)
+
+# Métriques de classification
+cat("\n--- Métriques Random Forest ---\n")
+cat("Accuracy  :", round(conf_matrix$overall["Accuracy"], 4), "\n")
+cat("Kappa     :", round(conf_matrix$overall["Kappa"], 4), "\n")
+cat("Sensibilité (Recall) :", round(conf_matrix$byClass["Sensitivity"], 4), "\n")
+cat("Spécificité          :", round(conf_matrix$byClass["Specificity"], 4), "\n")
+cat("Précision (PPV)      :", round(conf_matrix$byClass["Pos Pred Value"], 4), "\n")
+cat("F1-Score             :", round(conf_matrix$byClass["F1"], 4), "\n")
+
+
+```
+
+## Le poids remonte un peu aussi. Mais ça reste les même variable
+
+## 3.7 SVM (Support Vector Machine)
+
+```{r svm-initial}
+svm.reg0 <- svm(Heart_Disease_Risk ~ ., data = TrainCenter)
+```
+
+```{r svm-tuning}
+svm.reg.tune <- tune.svm(
+  Heart_Disease_Risk ~ .,
+  data  = TrainCenter,
+  cost  = c(1, 1.5, 2, 2.5, 3, 3.5),
+  gamma = seq(0.02, 0.1, by = 0.02)
+)
+
+plot(svm.reg.tune)
+summary(svm.reg.tune)
+```
+
+Test avec Caret car trop lent
+
+```{r}
+
+library(caret)
+library(doParallel)
+
+cl <- makePSOCKcluster(detectCores() - 1)
+registerDoParallel(cl)
+
+ctrl <- trainControl(method = "cv", number = 5, allowParallel = TRUE, classProbs = TRUE) 
+
+grid <- expand.grid(
+  sigma = c(0.01, 0.02, 0.05), 
+  C     = c(0.01, 0.1, 0.5, 1, 1.5) 
+)
+
+# 3. Lancer l'entraînement
+svm.caret <- train(
+  Heart_Disease_Risk ~ ., 
+  data      = TrainCenter, 
+  method    = "svmRadial", # "svmRadial" correspond au SVM avec noyau RBF
+  trControl = ctrl,
+  tuneGrid  = grid,
+  preProcess = c("center", "scale") # Très recommandé pour le SVM
+)
+
+# Une fois terminé, on arrête les cœurs
+stopCluster(cl)
+```
+
+```{r}
+# Affiche le tableau complet des résultats
+print(svm.caret$results)
+plot(svm.caret)
+summary(svm.caret)
+
+# 1. Faire les prédictions
+predictions_svm <- predict(svm.caret, newdata = TestCenter)
+
+# 2. Créer la matrice de confusion
+confusionMatrix(predictions, TestCenter$Heart_Disease_Risk)
+```
+
+```{r svm-optimal}
+# On prend la deuxième colonne des probabilités
+pred_rocr_svm <- prediction(probs_svm[, 2], labels)
+
+# On calcule la performance
+perfSVM <- performance(pred_rocr_svm, "tpr", "fpr")
+
+# Et on l'ajoute au graphique
+plot(perfSVM, col = "black", lwd = 2, add = TRUE)
+```
+
+Test avec kernel linéraire
+
+```{r}
+
+cl <- makePSOCKcluster(detectCores() - 1)
+registerDoParallel(cl)
+
+ctrl_linear <- trainControl(
+  method = "cv", 
+  number = 5, 
+  allowParallel = TRUE, 
+  classProbs = TRUE  # Indispensable pour la courbe ROC plus tard
+)
+
+# --- 3. Grille de paramètres (Seulement C pour le linéaire) ---
+# On teste des valeurs variées pour voir si le modèle préfère la souplesse (0.1) ou la rigueur (10)
+grid_linear <- expand.grid(C = c(0.01, 0.1, 1, 5, 10))
+
+# --- 4. Entraînement du modèle ---
+svm.linear <- train(
+  Heart_Disease_Risk ~ ., 
+  data       = TrainCenter, 
+  method     = "svmLinear",    # Changement crucial : on passe en linéaire
+  trControl  = ctrl_linear,
+  tuneGrid   = grid_linear,
+  preProcess = c("center", "scale") # Le SVM Linéaire a aussi besoin de normalisation
+)
+
+# --- 5. Nettoyage ---
+stopCluster(cl)
+registerDoSEQ() # Retour au mode de calcul normal
+
+
+
+```
+
+```{r}
+# --- 6. Affichage des résultats ---
+print(svm.linear)
+plot(svm.linear)
+
+
+# 1. Probabilités pour le modèle linéaire
+probs_linear <- predict(svm.linear, newdata = TestCenter, type = "prob")
+
+# 2. Préparation ROCR
+pred_rocr_svm_L <- prediction(probs_linear[, "X1"], TestCenter$Heart_Disease_Risk)
+```
+
+------------------------------------------------------------------------
+
+# 4. Comparaison des modèles — Courbes ROC
+
+```{r courbes-roc}
+# --- 1. Calcul des AUC pour la légende ---
+# On extrait la valeur numérique de l'AUC pour chaque modèle
+get_auc <- function(p) { round(as.numeric(performance(p, "auc")@y.values), 3) }
+
+auc_logit  <- get_auc(pred_rocr_logit)
+auc_bic    <- get_auc(pred_rocr_bic)
+auc_lasso  <- get_auc(pred_rocr_lasso)
+auc_tree   <- get_auc(pred_rocr_tree)
+auc_tree_C <- get_auc(pred_rocr_tree_C)
+auc_svm_R  <- get_auc(pred_rocr_svm)   # Ton RBF
+auc_svm_L  <- get_auc(pred_rocr_svm_L) # Ton Linéaire
+
+# --- 2. Création du graphique amélioré ---
+par(mfrow = c(1, 1))
+
+# On commence par le Logit pour fixer le cadre
+plot(perflogit, col = "blue", lty = 2, lwd = 1, 
+     main = "Comparaison des Modèles (ROC)", 
+     xlab = "Taux de Faux Positifs (1-Spécificité)",
+     ylab = "Taux de Vrais Positifs (Sensibilité)")
+
+# Ajout de la ligne de chance (diagonale grise)
+abline(a = 0, b = 1, col = "lightgrey", lty = 3)
+
+# Ajout des autres modèles
+plot(perfBIC,    col = "orange", lty = 2, add = TRUE)
+plot(perfLasso,  col = "green3", lty = 1, add = TRUE)
+plot(perfTree,   col = "purple", lty = 1, add = TRUE)
+plot(perfTree_C, col = "red",    lty = 1, add = TRUE)
+
+# On met en valeur les SVM avec des traits plus épais (lwd = 2)
+plot(perfSVM,    col = "cyan",     lwd = 2, add = TRUE)
+plot(perf_svm_L, col = "darkgrey", lwd = 2, add = TRUE)
+
+# --- 3. Légende ultra-précise avec les scores AUC ---
+legend("bottomright",
+       legend = c(
+         paste("Logit complet - AUC:", auc_logit),
+         paste("Logit + BIC - AUC:", auc_bic),
+         paste("Lasso - AUC:", auc_lasso),
+         paste("Arbre élagué - AUC:", auc_tree),
+         paste("Arbre CV - AUC:", auc_tree_C),
+         paste("SVM RBF - AUC:", auc_svm_R),
+         paste("SVM Linear - AUC:", auc_svm_L)
+       ),
+       col = c("blue", "orange", "green3", "purple", "red", "cyan", "darkgrey"),
+       lty = c(2, 2, 1, 1, 1, 1, 1),
+       lwd = c(1, 1, 1, 1, 1, 2, 2), # Traits épais pour les SVM
+       cex = 0.7,
+       bty = "n") # Supprime le cadre de la légende pour plus de clarté
+```
+
+SANS SVM: les arbres sont les moins bons, le reste est équivalent.
