@@ -91,9 +91,16 @@ plot_quantitative(data_raw)
 
 ```{r log-transform}
 vars_to_log <- c("Weight_kg", "BMI", "Height_cm")
+
 for (v in vars_to_log) {
-  data_raw[[paste0("Log", v)]] <- log(data_raw[[v]])
-  data_raw[[v]] <- NULL
+  # Only proceed if the original column exists in the dataframe
+  if (v %in% names(data_raw)) {
+    data_raw[[paste0("Log", v)]] <- log(data_raw[[v]])
+    data_raw[[v]] <- NULL
+    message(paste("Successfully transformed", v))
+  } else {
+    message(paste("Variable", v, "not found. It might have already been transformed."))
+  }
 }
 
 plot_quantitative(data_raw)
@@ -260,7 +267,8 @@ perfBIC   <- performance(pred_rocr_bic,   "tpr", "fpr")
 ```{r lasso-classif}
 x.mat_C <- model.matrix(Heart_Disease_Risk ~ . - 1, data = TrainC)
 y.vec_C <- as.numeric(as.character(TrainC$Heart_Disease_Risk))  # 0/1
-
+# Convert "X0"/"X1" back to 0/1 for glmnet
+y.vec_C <- ifelse(TrainC$Heart_Disease_Risk == "X1", 1, 0)
 reg.lasso_C    <- glmnet(x = x.mat_C, y = y.vec_C, family = "binomial")
 reg.lasso_C.cv <- cv.glmnet(x = x.mat_C, y = y.vec_C, family = "binomial", nfolds = 10)
 
@@ -816,12 +824,16 @@ print(gplot.res(y.test_R, pred.rf_R, "Résidus — Random Forest"))
 cl <- makePSOCKcluster(detectCores() - 1)
 registerDoParallel(cl)
 
+tuneGrid_radial <- expand.grid(
+  sigma = c(0.01, 0.05, 0.1, 0.2),
+  C     = c(0.5, 1, 2, 5)
+)
+
 svr.caret <- train(
-  Cholesterol_LDL ~ ., data = TrainR, method = "svmRadial",
+  Cholesterol_LDL ~ ., data = TrainR, 
+  method     = "svmRadial",
   trControl  = trainControl(method = "cv", number = 5, allowParallel = TRUE),
-  tuneGrid   = expand.grid(sigma   = c(0.01, 0.05, 0.1, 0.2),
-                            C       = c(0.5, 1, 2, 5),
-                            epsilon = c(0.05, 0.1, 0.2)),
+  tuneGrid   = tuneGrid_radial,
   preProcess = c("center", "scale")
 )
 
@@ -838,7 +850,7 @@ print(gplot.res(TestR$Cholesterol_LDL, pred.svr_R, "Résidus — SVR RBF"))
 ```{r svr-lineaire}
 cl <- makePSOCKcluster(detectCores() - 1)
 registerDoParallel(cl)
-
+grid <- expand.grid(C = c(0.01, 0.1, 1, 5, 10))
 svr.lin <- train(
   Cholesterol_LDL ~ ., data = TrainR, method = "svmLinear",
   trControl  = trainControl(method = "cv", number = 5, allowParallel = TRUE),
@@ -901,7 +913,8 @@ preds_list_R <- list(
   "Lasso"      = pred.lasso.1se,
   "CART (CV)"  = pred.cart.cv_R,
   "RF"         = pred.rf_R,
-  "SVR (RBF)"  = pred.svr_R
+  "SVR (RBF)"  = pred.svr_R,
+    "SVR (Linear)"=pred.svr.lin_R 
 )
 
 plots_pvo <- lapply(names(preds_list_R), function(nm) {
