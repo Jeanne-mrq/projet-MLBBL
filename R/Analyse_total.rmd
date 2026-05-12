@@ -272,7 +272,15 @@ y.vec_C <- ifelse(TrainC$Heart_Disease_Risk == "X1", 1, 0)
 reg.lasso_C    <- glmnet(x = x.mat_C, y = y.vec_C, family = "binomial")
 reg.lasso_C.cv <- cv.glmnet(x = x.mat_C, y = y.vec_C, family = "binomial", nfolds = 10)
 
-autoplot(reg.lasso_C.cv)
+# Plot 1 : évolution des coefficients en fonction de log(lambda)
+plot(reg.lasso_C, xvar = "lambda", label = TRUE,
+     main = "Lasso (classification) — Coefficients vs log(lambda)")
+
+# Plot 2 : erreur de CV en fonction de log(lambda) avec lambda.min et lambda.1se
+plot(reg.lasso_C.cv,
+     main = "Lasso (classification) — CV deviance vs log(lambda)")
+
+cat("lambda.min :", round(reg.lasso_C.cv$lambda.min, 6), "\n")
 cat("lambda.1se :", round(reg.lasso_C.cv$lambda.1se, 6), "\n")
 coef(reg.lasso_C.cv, s = "lambda.1se")
 
@@ -303,7 +311,7 @@ plotcp(tree.reg_C)
 best_cp_C   <- tree.reg_C$cptable[which.min(tree.reg_C$cptable[, "xerror"]), "CP"]
 tree.pruned_C <- prune(tree.reg_C, cp = best_cp_C)
 
-plot(as.party(tree.pruned_C), type = "simple", gp = gpar(fontsize = 5))
+rpart.plot(tree.pruned_C, type = 2, extra = 104, cex = 0.6)
 
 pred_tree_class <- predict(tree.pruned_C, newdata = TestC, type = "class")
 table(Prédit = pred_tree_class, Réel = TestC$Heart_Disease_Risk)
@@ -330,7 +338,7 @@ best_cp_cv_C <- tree.cv_C$bestTune$cp
 cat("cp optimal (CV) :", best_cp_cv_C, "\n")
 
 tree.pruned_cv_C <- prune(tree.reg_C, cp = best_cp_cv_C)
-plot(as.party(tree.pruned_cv_C), type = "simple", gp = gpar(fontsize = 5))
+rpart.plot(tree.pruned_cv_C, type = 2, extra = 104, tweak = 1.2, fallen.leaves = TRUE, main = "CART élagué (CV)")
 
 pred_tree_C_class <- predict(tree.pruned_cv_C, newdata = TestC, type = "class")
 table(Prédit = pred_tree_C_class, Réel = TestC$Heart_Disease_Risk)
@@ -720,6 +728,7 @@ pred.lasso.1se <- as.vector(predict(reg.lasso_R.cv, newx = x.test_R, s = "lambda
 
 res.lasso.min <- metriques_reg(y.test_R, pred.lasso.min, "Lasso lambda.min")
 res.lasso.1se <- metriques_reg(y.test_R, pred.lasso.1se, "Lasso lambda.1se")
+print(gplot.res(y.test_R, pred.lasso.1se, "Résidus — Lasso lambda.1se"))
 # Différence minime — on préfère lambda.1se pour la parcimonie
 ```
 
@@ -872,21 +881,20 @@ print(gplot.res(TestR$Cholesterol_LDL, pred.svr.lin_R, "Résidus — SVR Linéai
 resultats_reg <- data.frame(
   Modèle = c("LM complet", "LM + BIC", "LM quadratique", "LM Inter + BIC",
               "Ridge", "Lasso", "CART (xerror)", "CART (CV)",
-              "Random Forest", "SVR (RBF)", "SVR (Linéaire)"),
+              "Random Forest"), #"SVR (RBF)", "SVR (Linéaire)"),
   RMSE = c(res.lm["RMSE"],        res.lm.bic["RMSE"],    res.quad["RMSE"],
             res.inter.bic["RMSE"], res.ridge.1se["RMSE"], res.lasso.1se["RMSE"],
-            res.cart_R["RMSE"],    res.cart.cv_R["RMSE"], res.rf_R["RMSE"],
-            res.svr_R["RMSE"],     res.svr.lin_R["RMSE"]),
+            res.cart_R["RMSE"],    res.cart.cv_R["RMSE"], res.rf_R["RMSE"]),
+            #res.svr_R["RMSE"],     res.svr.lin_R["RMSE"]),
   MAE  = c(res.lm["MAE"],         res.lm.bic["MAE"],     res.quad["MAE"],
             res.inter.bic["MAE"],  res.ridge.1se["MAE"],  res.lasso.1se["MAE"],
-            res.cart_R["MAE"],     res.cart.cv_R["MAE"],  res.rf_R["MAE"],
-            res.svr_R["MAE"],      res.svr.lin_R["MAE"]),
+            res.cart_R["MAE"],     res.cart.cv_R["MAE"],  res.rf_R["MAE"]),
+            #res.svr_R["MAE"],      res.svr.lin_R["MAE"]),
   R2   = c(res.lm["R2"],          res.lm.bic["R2"],      res.quad["R2"],
             res.inter.bic["R2"],   res.ridge.1se["R2"],   res.lasso.1se["R2"],
-            res.cart_R["R2"],      res.cart.cv_R["R2"],   res.rf_R["R2"],
-            res.svr_R["R2"],       res.svr.lin_R["R2"])
+            res.cart_R["R2"],      res.cart.cv_R["R2"],   res.rf_R["R2"])
+            #res.svr_R["R2"],       res.svr.lin_R["R2"])
 ) %>% arrange(RMSE)
-
 print(resultats_reg)
 ```
 
@@ -928,3 +936,7 @@ plots_pvo <- lapply(names(preds_list_R), function(nm) {
 
 do.call(grid.arrange, c(plots_pvo, ncol = 2))
 ```
+
+C'est cohérent et plutôt bon signe. Le **R²** doit alors être autour de **0.50–0.55**.
+
+La légère asymétrie RMSE/MAE (0.70 vs 0.45) indique qu'il y a quelques **valeurs aberrantes** — le RMSE pénalise davantage les grosses erreurs, donc l'écart suggère quelques prédictions assez éloignées sans que ce soit systématique. C'est visible sur les `gplot.res` : quelques points isolés loin de la ligne zéro.
