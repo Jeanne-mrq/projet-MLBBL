@@ -615,22 +615,37 @@ summary(TrainR[, c(cible, quanti_cols_expl)])
 ```
 
 ```{r fonctions-metriques-reg}
-metriques_reg <- function(obs, pred, modele = "", lm_model = NULL) {
-  rmse <- sqrt(mean((obs - pred)^2))
-  mae  <- mean(abs(obs - pred))
-  if (!is.null(lm_model)) {
-    s      <- summary(lm_model)
+metriques_reg <- function(obs, pred = NULL, etiquette = "", m = NULL) {
+  
+  # 1. Détection automatique : si 'obs' est en fait un modèle
+  if (inherits(obs, "lm")) {
+    m <- obs
+    # Si on a passé un nom en 2ème argument au lieu de 'pred'
+    etiquette <- if(is.character(pred)) pred else etiquette 
+    
+    # Extraction des données réelles du modèle (gère les NA et transformations)
+    obs  <- model.response(model.frame(m))
+    pred <- fitted(m)
+    s    <- summary(m)
+    
+    rmse   <- s$sigma # C'est le "Residual Standard Error" de R
+    mae    <- mean(abs(residuals(m)))
     r2     <- s$r.squared
     r2_adj <- s$adj.r.squared
     mse    <- s$sigma^2
   } else {
+    # 2. Calcul manuel classique (si on passe des vecteurs)
     n      <- length(obs)
+    rmse   <- sqrt(mean((obs - pred)^2))
+    mae    <- mean(abs(obs - pred))
     r2     <- 1 - sum((obs - pred)^2) / sum((obs - mean(obs))^2)
     r2_adj <- 1 - ((1 - r2) * (n - 1) / (n - 2))
     mse    <- mean((obs - pred)^2)
   }
-  cat(sprintf("%-28s RMSE: %.4f | MAE: %.4f | R²: %.4f | R² Adj: %.4f\n",
-              modele, rmse, mae, r2, r2_adj))
+  
+  cat(sprintf("%-28s RMSE: %.4f | MAE: %.4f | R²: %.4f | R² Adj: %.4f\n", 
+              etiquette, rmse, mae, r2, r2_adj))
+  
   invisible(c(RMSE = rmse, MAE = mae, MSE = mse, R2 = r2, R2_Adj = r2_adj))
 }
 
