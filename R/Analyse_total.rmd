@@ -87,6 +87,8 @@ plot_quantitative <- function(df) {
 plot_quantitative(data_raw)
 ```
 
+Certaines variables semblent relativement gaussiennes. D'autres son asymetriques ce qui pourrait nous gener dans notre analyse
+
 **Transformation logarithmique** des variables asymétriques (`Weight_kg`, `BMI`, `Height_cm`).
 
 ```{r log-transform}
@@ -105,6 +107,8 @@ for (v in vars_to_log) {
 
 plot_quantitative(data_raw)
 ```
+
+Nous définissons nos variables quantitatives et celles qualitatives afin de pouvoir réaliser nos statistiques descriptives.
 
 ```{r definition-colonnes}
 # Variables quantitatives explicatives communes
@@ -157,6 +161,7 @@ ggplot(data_long, aes(x = Variable, y = Valeur, fill = Heart_Disease_Risk)) +
 ```
 
 ```{r barplots-quali-vs-cible}
+#Affichage de la proportion de personne présentant un risque de maladie cardiaque en fonction des données qualitatives
 for (col in c(quali_cols_base, "Heart_Disease_Risk")) {
   if (col == "Heart_Disease_Risk") next
   p <- ggplot(data_classif, aes_string(x = col, fill = "Heart_Disease_Risk")) +
@@ -177,6 +182,18 @@ corrplot(cor(data_classif[, vars_num]), method = "ellipse",
          title = "Matrice de corrélations", mar = c(0, 0, 1, 0))
 ```
 
+```{r}
+#Distribution et correlation des variables quantitatives entres elles colorées selon le risk de maladie cardiaque (rouge si 0, bleu si 1)
+ggpairs(
+  data_raw[, c(cible, "Age", "Cholesterol_Total", "Cholesterol_HDL",
+               "Systolic_BP", "Diastolic_BP", "Fasting_Blood_Sugar",
+               "LogWeight_kg", "LogBMI", "LogHeight_cm")],
+  mapping = aes(alpha = 0.2, color = data_raw$Heart_Disease_Risk),
+  upper   = list(continuous = wrap("cor", size = 2.5)),
+  lower   = list(continuous = wrap("points", size = 0.3))
+) + theme_minimal()
+```
+Les graphiques issus de ggpairs nous permettent de penser que l'age, la pression cardiaque et le taux de sucre dans le sang influence le risque de maladie cardiaque (densité autour de valeur plus faible pour l'absence de risque)
 ### 2.2 ACP
 
 ```{r acp-classif}
@@ -206,6 +223,7 @@ fviz_pca_ind(acp_classif, col.ind = "contrib", label = "none",
 ### 3.1 Partition et prétraitement
 
 ```{r partition-classif}
+#Séparation en dataSet de test et d'entrainement selon une proportion 20/80
 set.seed(42)
 
 trainIndex_C <- createDataPartition(data_classif$Heart_Disease_Risk,
@@ -261,7 +279,7 @@ pred_rocr_bic   <- prediction(pred.log.bic, TestC$Heart_Disease_Risk)
 perflogit <- performance(pred_rocr_logit, "tpr", "fpr")
 perfBIC   <- performance(pred_rocr_bic,   "tpr", "fpr")
 ```
-
+Retenir le BIC est une bonne idée. Les performances osnt un peu moins bonnes mais le modèle est bien plus simple
 ### 3.3 Lasso (classification)
 
 ```{r lasso-classif}
@@ -273,8 +291,17 @@ reg.lasso_C    <- glmnet(x = x.mat_C, y = y.vec_C, family = "binomial")
 reg.lasso_C.cv <- cv.glmnet(x = x.mat_C, y = y.vec_C, family = "binomial", nfolds = 10)
 
 # Plot 1 : évolution des coefficients en fonction de log(lambda)
-plot(reg.lasso_C, xvar = "lambda", label = TRUE,
-     main = "Lasso (classification) — Coefficients vs log(lambda)")
+plot(reg.lasso_C, xvar = "lambda", label = TRUE, 
+     main = "Lasso : Sélection des variables")
+
+    # 1 trait pour lambda.min (Rouge pointillé)
+    abline(v = -log(reg.lasso_C.cv$lambda.min), col = "red", lty = 2, lwd = 2)
+    mtext("min", side = 3, at = -log(reg.lasso_C.cv$lambda.min), col = "red", cex = 1)
+
+    # trait pour lambda.1se (Bleu pointillé)
+    abline(v = -log(reg.lasso_C.cv$lambda.1se), col = "blue", lty = 2, lwd = 2)
+    mtext("1se", side = 3, at = -log(reg.lasso_C.cv$lambda.1se), col = "blue", cex = 1)
+
 
 # Plot 2 : erreur de CV en fonction de log(lambda) avec lambda.min et lambda.1se
 plot(reg.lasso_C.cv,
@@ -293,7 +320,7 @@ table(Prédiction = pred.classlasso, Réel = TestC$Heart_Disease_Risk)
 pred_rocr_lasso <- prediction(as.vector(pred.lasso_C), TestC$Heart_Disease_Risk)
 perfLasso       <- performance(pred_rocr_lasso, "tpr", "fpr")
 ```
-
+L'erreur pour lambda.1se et lmabda.min est quasiment identique. Encore une fois on garde le modèle le plus simple obtenu avec lmabda.1se
 ### 3.4 Arbre CART (classification)
 
 #### Élagage par Xerror
@@ -555,16 +582,7 @@ cat("\nCorrélations avec Cholesterol_LDL :\n")
 print(round(cor_cible, 3))
 ```
 
-```{r ggpairs-ldl}
-ggpairs(
-  data_reg[, c(cible, "Age", "Cholesterol_Total", "Cholesterol_HDL",
-               "Systolic_BP", "Diastolic_BP", "Fasting_Blood_Sugar",
-               "LogWeight_kg", "LogBMI", "LogHeight_cm")],
-  mapping = aes(alpha = 0.2, color = data_reg$Gender),
-  upper   = list(continuous = wrap("cor", size = 2.5)),
-  lower   = list(continuous = wrap("points", size = 0.3))
-) + theme_minimal()
-```
+
 
 ### 5.3 ACP
 
@@ -600,11 +618,12 @@ fviz_pca_ind(acp_reg, col.ind = data_reg$Cholesterol_LDL, label = "none",
 
 ```{r partition-reg}
 set.seed(42)
-
+#Séparation en deux data sets 
 trainIndex_R <- createDataPartition(data_reg[[cible]], times = 1, p = 0.8, list = FALSE)
 trainData_R  <- data_reg[ trainIndex_R, ]
 testData_R   <- data_reg[-trainIndex_R, ]
 
+#On centre et réduit les données
 params_R  <- preProcess(trainData_R, method = c("center", "scale"))
 TrainR    <- predict(params_R, trainData_R)[, -1]
 TestR     <- predict(params_R, testData_R)[, -1]
@@ -684,7 +703,7 @@ summary(lm.bic)
 pred.lm.bic <- predict(lm.bic, newdata = TestR)
 res.lm.bic  <- metriques_reg(TestR$Cholesterol_LDL, pred.lm.bic, "LM + BIC")
 print(gplot.res(TestR$Cholesterol_LDL, pred.lm.bic, "Résidus — LM + BIC"))
-# Résultat très proche du modèle complet
+# Résultat très proche du modèle complet (et extremement simple)
 ```
 
 #### Modèle quadratique
